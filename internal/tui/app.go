@@ -13,6 +13,7 @@ import (
 	"github.com/TheOriUHD/patchpilot/internal/config"
 	"github.com/TheOriUHD/patchpilot/internal/core"
 	"github.com/TheOriUHD/patchpilot/internal/ipc"
+	"github.com/TheOriUHD/patchpilot/internal/stream"
 	"github.com/TheOriUHD/patchpilot/internal/tui/components"
 	"github.com/TheOriUHD/patchpilot/internal/tui/theme"
 )
@@ -80,6 +81,25 @@ type model struct {
 	renameBuffer string
 	pending      pendingAction
 	wizard       standardWizard
+
+	schedules        []core.Schedule
+	scheduleLoading  bool
+	scheduleError    string
+	scheduleSelected int
+	scheduleScreen   scheduleScreen
+	scheduleEditor   scheduleEditor
+
+	runs           []core.Run
+	runLoading     bool
+	runError       string
+	runSelected    int
+	liveRun        *core.RunDetail
+	liveLogLines   []liveLogEntry
+	liveHostIndex  int
+	liveCancel     bool
+	runEvents      <-chan stream.Event
+	runEventErrors <-chan error
+	runStreamStop  context.CancelFunc
 }
 
 type healthLoadedMsg struct {
@@ -137,7 +157,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.daemonError = ""
 		m.status = "Connected to daemon " + typed.health.Version
 		m.hostLoading = true
-		return m, loadHostsCmd(m.ctx, m.client)
+		m.scheduleLoading = true
+		m.runLoading = true
+		return m, tea.Batch(loadHostsCmd(m.ctx, m.client), loadSchedulesCmd(m.ctx, m.client), loadRunsCmd(m.ctx, m.client))
 	case daemonStartedMsg:
 		m.starting = false
 		if typed.err != nil {
@@ -171,6 +193,76 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = typed.message
 		m.hostLoading = true
 		return m, loadHostsCmd(m.ctx, m.client)
+	case schedulesLoadedMsg:
+		m.scheduleLoading = false
+		if typed.err != nil {
+			m.scheduleError = typed.err.Error()
+			m.status = "Could not load schedules"
+			return m, nil
+		}
+		m.scheduleError = ""
+		m.schedules = typed.schedules
+		if m.scheduleSelected >= len(m.schedules) {
+			m.scheduleSelected = max(0, len(m.schedules)-1)
+		}
+		return m, nil
+	case scheduleMutationMsg:
+		if typed.err != nil {
+			m.status = typed.err.Error()
+			return m, nil
+		}
+		m.status = typed.message
+		m.scheduleScreen = scheduleScreenList
+		m.scheduleLoading = true
+		return m, loadSchedulesCmd(m.ctx, m.client)
+	case runsLoadedMsg:
+		m.runLoading = false
+		if typed.err != nil {
+			m.runError = typed.err.Error()
+			m.status = "Could not load runs"
+			return m, nil
+		}
+		m.runError = ""
+		m.runs = typed.runs
+		if m.runSelected >= len(m.runs) {
+			m.runSelected = max(0, len(m.runs)-1)
+		}
+		return m, nil
+	case runStartedMsg:
+		if typed.err != nil {
+			m.status = typed.err.Error()
+			return m, nil
+		}
+		m.activeTab = 2
+		m.liveRun = &typed.detail
+		m.liveLogLines = nil
+		m.liveHostIndex = 0
+		m.status = fmt.Sprintf("Run %d %s", typed.detail.Run.ID, typed.detail.Run.Status)
+		return m, tea.Batch(m.startRunStream(typed.detail.Run.ID), loadRunsCmd(m.ctx, m.client))
+	case runDetailLoadedMsg:
+		if typed.err != nil {
+			m.status = typed.err.Error()
+			return m, nil
+		}
+		m.liveRun = &typed.detail
+		m.liveLogLines = nil
+		m.liveHostIndex = 0
+		return m, m.startRunStream(typed.detail.Run.ID)
+	case runStreamMsg:
+		return m, m.handleRunStreamEvent(typed.event)
+	case runStreamErrorMsg:
+		if typed.err != nil && m.liveRun != nil {
+			m.status = typed.err.Error()
+		}
+		return m, nil
+	case runCancelledMsg:
+		m.liveCancel = false
+		if typed.err != nil {
+			m.status = typed.err.Error()
+			return m, nil
+		}
+		m.status = "Run cancelled"
+		return m, loadRunsCmd(m.ctx, m.client)
 	case dryRunLoadedMsg:
 		if typed.err != nil {
 			m.status = typed.err.Error()
@@ -220,6 +312,12 @@ func (m model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.daemonState == components.DaemonUp && m.activeTab == 0 {
 		return m.handleHostsKey(key)
 	}
+	if m.daemonState == components.DaemonUp && m.activeTab == 1 {
+		return m.handleSchedulesKey(key)
+	}
+	if m.daemonState == components.DaemonUp && m.activeTab == 2 {
+		return m.handleRunsKey(key)
+	}
 
 	switch key.String() {
 	case "q", "ctrl+c":
@@ -261,9 +359,9 @@ func (m model) renderActiveTab(bodyHeight int) string {
 	case 0:
 		return m.renderHostsView(bodyHeight)
 	case 1:
-		return m.centerCard(bodyHeight, m.styles.Card.Render(m.styles.CardTitle.Render("Schedules")+"\n\nNo schedules yet."))
+		return m.renderSchedulesView(bodyHeight)
 	case 2:
-		return m.centerCard(bodyHeight, m.styles.Card.Render(m.styles.CardTitle.Render("Logs")+"\n\nNo runs have been recorded yet."))
+		return m.renderRunsView(bodyHeight)
 	case 3:
 		return m.centerCard(bodyHeight, m.styles.Card.Render(m.styles.CardTitle.Render("Settings")+"\n\nDaemon socket: "+m.cfg.Paths.SocketPath))
 	default:
@@ -305,6 +403,12 @@ func (m model) centerCard(bodyHeight int, content string) string {
 func (m model) keybinds() []string {
 	if m.daemonState == components.DaemonUp && m.activeTab == 0 {
 		return m.hostKeybinds()
+	}
+	if m.daemonState == components.DaemonUp && m.activeTab == 1 {
+		return m.scheduleKeybinds()
+	}
+	if m.daemonState == components.DaemonUp && m.activeTab == 2 {
+		return m.runKeybinds()
 	}
 	keys := []string{"Tab switch", "1-4 tabs", "q quit"}
 	if m.daemonState == components.DaemonDown {

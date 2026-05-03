@@ -284,7 +284,7 @@ func (m model) renderHostList(bodyHeight int) string {
 		if !host.Enabled {
 			status = theme.SymbolDisabled
 		}
-		line := fmt.Sprintf("%-2s %-22s %-12s %-12s %-12s %-8s %s", cursor+status, truncate(host.Name, 22), host.Type, host.PackageManager, "-", "-", "-")
+		line := fmt.Sprintf("%-2s %-22s %-12s %-12s %-12s %-8s %s", cursor+status, truncate(host.Name, 22), host.Type, host.PackageManager, "-", "-", m.hostRebootHint(host.ID))
 		if index == m.hostSelected {
 			builder.WriteString(m.styles.ActiveTab.Render(line))
 		} else {
@@ -320,7 +320,7 @@ func (m model) renderHostDetail(bodyHeight int) string {
 	switch m.detailTab {
 	case 0:
 		builder.WriteString(fmt.Sprintf("Hostname: %s:%d\n", host.Hostname, host.SSHPort))
-		builder.WriteString(fmt.Sprintf("Type: %s\nPackage: %s\nOS: %s\nArch: %s\nEnabled: %v\nNotes: %s\n", host.Type, host.PackageManager, host.OSPretty, host.Arch, host.Enabled, host.Notes))
+		builder.WriteString(fmt.Sprintf("Type: %s\nPackage: %s\nOS: %s\nArch: %s\nEnabled: %v\nReboot: %s\nNotes: %s\n", host.Type, host.PackageManager, host.OSPretty, host.Arch, host.Enabled, m.hostRebootHint(host.ID), host.Notes))
 		builder.WriteString("\nActions: u update  d dry run  n rename  e enable/disable  x remove  q back")
 	case 1:
 		builder.WriteString("No host run history yet. Manual runs created here will appear in the Logs milestone view.")
@@ -382,6 +382,18 @@ func (m model) selectedHost() (core.Host, bool) {
 	return hosts[m.hostSelected], true
 }
 
+func (m model) hostRebootHint(hostID int64) string {
+	if m.liveRun == nil {
+		return "-"
+	}
+	for _, hostRun := range m.liveRun.HostRuns {
+		if hostRun.HostID == hostID && hostRun.RebootRequired {
+			return "yes"
+		}
+	}
+	return "-"
+}
+
 func updateHostCmd(ctx context.Context, client *ipc.Client, id int64, input core.HostUpdate, message string) tea.Cmd {
 	return func() tea.Msg {
 		requestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -422,12 +434,8 @@ func runHostCmd(ctx context.Context, client *ipc.Client, id int64) tea.Cmd {
 	return func() tea.Msg {
 		requestCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		runID, err := client.RunHostNow(requestCtx, id)
-		message := "Manual run started"
-		if runID != 0 {
-			message = fmt.Sprintf("Manual run %d started", runID)
-		}
-		return hostMutationMsg{message: message, err: err}
+		detail, err := client.RunHostNowDetail(requestCtx, id)
+		return runStartedMsg{detail: detail, err: err}
 	}
 }
 

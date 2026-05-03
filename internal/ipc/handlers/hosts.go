@@ -9,7 +9,7 @@ import (
 )
 
 // RegisterHosts mounts host inventory endpoints.
-func RegisterHosts(router chi.Router, service *core.HostService) {
+func RegisterHosts(router chi.Router, service *core.HostService, orchestrator *core.Orchestrator) {
 	router.Route("/api/hosts", func(r chi.Router) {
 		r.Get("/", func(w http.ResponseWriter, req *http.Request) {
 			hosts, err := service.Hosts.List(req.Context())
@@ -108,12 +108,12 @@ func RegisterHosts(router chi.Router, service *core.HostService) {
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
-			runID, err := service.RunHostNow(req.Context(), id)
+			detail, err := orchestrator.RunHostNow(req.Context(), id, core.RunTriggerManual, "tui")
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, err)
 				return
 			}
-			writeJSON(w, http.StatusAccepted, map[string]int64{"run_id": runID})
+			writeJSON(w, http.StatusAccepted, detail)
 		})
 	})
 }

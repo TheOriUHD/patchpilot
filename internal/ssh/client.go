@@ -5,7 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"sync"
 	"time"
 
 	xssh "golang.org/x/crypto/ssh"
@@ -16,6 +18,12 @@ type CommandResult struct {
 	Stdout   string
 	Stderr   string
 	ExitCode int
+}
+
+// StreamChunk is a piece of stdout or stderr emitted by a remote command.
+type StreamChunk struct {
+	Stream string
+	Data   []byte
 }
 
 // Runner executes commands on a remote host.
@@ -90,6 +98,66 @@ func (c *Client) Run(ctx context.Context, command string, stdin []byte) (Command
 	}
 }
 
+// RunStream executes a command while reporting stdout and stderr chunks as they arrive.
+func (c *Client) RunStream(ctx context.Context, command string, stdin []byte, onChunk func(StreamChunk)) (CommandResult, error) {
+	if err := ctx.Err(); err != nil {
+		return CommandResult{}, err
+	}
+
+	session, err := c.client.NewSession()
+	if err != nil {
+		return CommandResult{}, fmt.Errorf("open ssh session: %w", err)
+	}
+	defer session.Close()
+
+	stdoutPipe, err := session.StdoutPipe()
+	if err != nil {
+		return CommandResult{}, fmt.Errorf("open stdout pipe: %w", err)
+	}
+	stderrPipe, err := session.StderrPipe()
+	if err != nil {
+		return CommandResult{}, fmt.Errorf("open stderr pipe: %w", err)
+	}
+	if len(stdin) > 0 {
+		session.Stdin = bytes.NewReader(stdin)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	var waitGroup sync.WaitGroup
+	copyPipe := func(name string, reader io.Reader, buffer *bytes.Buffer) {
+		defer waitGroup.Done()
+		_, _ = io.Copy(streamWriter{stream: name, buffer: buffer, onChunk: onChunk}, reader)
+	}
+
+	if err := session.Start(command); err != nil {
+		return CommandResult{Stdout: stdout.String(), Stderr: stderr.String(), ExitCode: exitCode(err)}, fmt.Errorf("start remote command: %w", err)
+	}
+	waitGroup.Add(2)
+	go copyPipe("stdout", stdoutPipe, &stdout)
+	go copyPipe("stderr", stderrPipe, &stderr)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- session.Wait()
+	}()
+
+	select {
+	case <-ctx.Done():
+		_ = session.Signal(xssh.SIGKILL)
+		_ = session.Close()
+		waitGroup.Wait()
+		return CommandResult{Stdout: stdout.String(), Stderr: stderr.String(), ExitCode: -1}, ctx.Err()
+	case err := <-done:
+		waitGroup.Wait()
+		result := CommandResult{Stdout: stdout.String(), Stderr: stderr.String(), ExitCode: exitCode(err)}
+		if err != nil {
+			return result, fmt.Errorf("run remote command: %w", err)
+		}
+		return result, nil
+	}
+}
+
 // Close closes the SSH connection.
 func (c *Client) Close() error {
 	return c.client.Close()
@@ -144,4 +212,19 @@ func exitCode(err error) int {
 		return exitErr.ExitStatus()
 	}
 	return -1
+}
+
+type streamWriter struct {
+	stream  string
+	buffer  *bytes.Buffer
+	onChunk func(StreamChunk)
+}
+
+func (w streamWriter) Write(data []byte) (int, error) {
+	_, _ = w.buffer.Write(data)
+	if w.onChunk != nil && len(data) > 0 {
+		chunk := append([]byte(nil), data...)
+		w.onChunk(StreamChunk{Stream: w.stream, Data: chunk})
+	}
+	return len(data), nil
 }

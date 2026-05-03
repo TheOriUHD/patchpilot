@@ -100,13 +100,84 @@ func (c *Client) DryRunHost(ctx context.Context, id int64) (pkgmgr.DryRunResult,
 
 // RunHostNow starts a manual single-host run.
 func (c *Client) RunHostNow(ctx context.Context, id int64) (int64, error) {
-	var result struct {
-		RunID int64 `json:"run_id"`
-	}
-	if err := c.doJSON(ctx, http.MethodPost, fmt.Sprintf("/api/hosts/%d/run", id), nil, &result); err != nil {
+	detail, err := c.RunHostNowDetail(ctx, id)
+	if err != nil {
 		return 0, err
 	}
-	return result.RunID, nil
+	return detail.Run.ID, nil
+}
+
+// RunHostNowDetail starts a manual single-host run and returns its persisted detail.
+func (c *Client) RunHostNowDetail(ctx context.Context, id int64) (core.RunDetail, error) {
+	var detail core.RunDetail
+	if err := c.doJSON(ctx, http.MethodPost, fmt.Sprintf("/api/hosts/%d/run", id), nil, &detail); err != nil {
+		return core.RunDetail{}, err
+	}
+	return detail, nil
+}
+
+// ListSchedules fetches all schedules.
+func (c *Client) ListSchedules(ctx context.Context) ([]core.Schedule, error) {
+	var schedules []core.Schedule
+	if err := c.doJSON(ctx, http.MethodGet, "/api/schedules/", nil, &schedules); err != nil {
+		return nil, err
+	}
+	return schedules, nil
+}
+
+// CreateSchedule creates a schedule.
+func (c *Client) CreateSchedule(ctx context.Context, input core.ScheduleInput) (core.Schedule, error) {
+	var schedule core.Schedule
+	if err := c.doJSON(ctx, http.MethodPost, "/api/schedules/", input, &schedule); err != nil {
+		return core.Schedule{}, err
+	}
+	return schedule, nil
+}
+
+// UpdateSchedule updates a schedule.
+func (c *Client) UpdateSchedule(ctx context.Context, id int64, input core.ScheduleInput) (core.Schedule, error) {
+	var schedule core.Schedule
+	if err := c.doJSON(ctx, http.MethodPut, fmt.Sprintf("/api/schedules/%d", id), input, &schedule); err != nil {
+		return core.Schedule{}, err
+	}
+	return schedule, nil
+}
+
+// DeleteSchedule removes a schedule.
+func (c *Client) DeleteSchedule(ctx context.Context, id int64) error {
+	return c.doJSON(ctx, http.MethodDelete, fmt.Sprintf("/api/schedules/%d", id), nil, nil)
+}
+
+// RunScheduleNow starts or queues a manual run for a schedule.
+func (c *Client) RunScheduleNow(ctx context.Context, id int64) (core.RunDetail, error) {
+	var detail core.RunDetail
+	if err := c.doJSON(ctx, http.MethodPost, fmt.Sprintf("/api/schedules/%d/run", id), nil, &detail); err != nil {
+		return core.RunDetail{}, err
+	}
+	return detail, nil
+}
+
+// ListRuns fetches recent runs.
+func (c *Client) ListRuns(ctx context.Context) ([]core.Run, error) {
+	var runs []core.Run
+	if err := c.doJSON(ctx, http.MethodGet, "/api/runs/", nil, &runs); err != nil {
+		return nil, err
+	}
+	return runs, nil
+}
+
+// GetRun fetches one run detail.
+func (c *Client) GetRun(ctx context.Context, id int64) (core.RunDetail, error) {
+	var detail core.RunDetail
+	if err := c.doJSON(ctx, http.MethodGet, fmt.Sprintf("/api/runs/%d", id), nil, &detail); err != nil {
+		return core.RunDetail{}, err
+	}
+	return detail, nil
+}
+
+// CancelRun cancels a run.
+func (c *Client) CancelRun(ctx context.Context, id int64) error {
+	return c.doJSON(ctx, http.MethodPost, fmt.Sprintf("/api/runs/%d/cancel", id), nil, nil)
 }
 
 // DetectStandard runs the Standard host detection flow.
@@ -151,13 +222,22 @@ func (c *Client) CancelBootstrap(ctx context.Context, sessionID string) error {
 
 // WizardEvents subscribes to a bootstrap wizard SSE stream.
 func (c *Client) WizardEvents(ctx context.Context, sessionID string) (<-chan stream.Event, <-chan error) {
+	return c.events(ctx, "/api/wizard/"+sessionID+"/stream")
+}
+
+// RunEvents subscribes to run status and log events.
+func (c *Client) RunEvents(ctx context.Context, runID int64) (<-chan stream.Event, <-chan error) {
+	return c.events(ctx, fmt.Sprintf("/api/runs/%d/stream", runID))
+}
+
+func (c *Client) events(ctx context.Context, path string) (<-chan stream.Event, <-chan error) {
 	events := make(chan stream.Event, 16)
 	errors := make(chan error, 1)
 	go func() {
 		defer close(events)
 		defer close(errors)
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://patchpilot/api/wizard/"+sessionID+"/stream", nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://patchpilot"+path, nil)
 		if err != nil {
 			errors <- fmt.Errorf("create stream request: %w", err)
 			return

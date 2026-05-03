@@ -5,11 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/TheOriUHD/patchpilot/internal/pkgmgr"
 	remotessh "github.com/TheOriUHD/patchpilot/internal/ssh"
@@ -24,12 +21,6 @@ type HostRepository interface {
 	Update(ctx context.Context, id int64, input HostUpdate) (Host, error)
 	SetEnabled(ctx context.Context, id int64, enabled bool) (Host, error)
 	Delete(ctx context.Context, id int64) error
-}
-
-// RunRepository is the storage interface required by manual run execution.
-type RunRepository interface {
-	CreateManualHostRun(ctx context.Context, hostID int64, logPath string) (int64, int64, error)
-	FinishHostRun(ctx context.Context, runID int64, hostRunID int64, status string, exitCode int, packages int, rebootRequired bool, summary string) error
 }
 
 // AuditRepository is the storage interface required for audit logging.
@@ -115,21 +106,19 @@ type CommitHostInput struct {
 
 // HostService coordinates host inventory, detection, bootstrap, dry-runs, and manual updates.
 type HostService struct {
-	Hosts      HostRepository
-	Runs       RunRepository
-	Audit      AuditRepository
-	Keys       *remotessh.KeyStore
-	Streams    *stream.Hub
-	Logger     *slog.Logger
-	RunLogRoot string
+	Hosts   HostRepository
+	Audit   AuditRepository
+	Keys    *remotessh.KeyStore
+	Streams *stream.Hub
+	Logger  *slog.Logger
 
 	mu       sync.Mutex
 	sessions map[string]bootstrapSessionState
 }
 
 // NewHostService creates the host workflow service.
-func NewHostService(hosts HostRepository, runs RunRepository, audit AuditRepository, keys *remotessh.KeyStore, streams *stream.Hub, logger *slog.Logger, runLogRoot string) *HostService {
-	return &HostService{Hosts: hosts, Runs: runs, Audit: audit, Keys: keys, Streams: streams, Logger: logger, RunLogRoot: runLogRoot, sessions: make(map[string]bootstrapSessionState)}
+func NewHostService(hosts HostRepository, audit AuditRepository, keys *remotessh.KeyStore, streams *stream.Hub, logger *slog.Logger) *HostService {
+	return &HostService{Hosts: hosts, Audit: audit, Keys: keys, Streams: streams, Logger: logger, sessions: make(map[string]bootstrapSessionState)}
 }
 
 // DetectStandard probes a Standard host over SSH and diagnoses bootstrap readiness.
@@ -248,27 +237,6 @@ func (s *HostService) DryRunHost(ctx context.Context, hostID int64) (pkgmgr.DryR
 		return pkgmgr.DryRunResult{}, err
 	}
 	return s.dryRunExistingHost(ctx, host)
-}
-
-// RunHostNow starts a manual single-host update in the background.
-func (s *HostService) RunHostNow(ctx context.Context, hostID int64) (int64, error) {
-	host, err := s.Hosts.Get(ctx, hostID)
-	if err != nil {
-		return 0, err
-	}
-	runDir := filepath.Join(s.RunLogRoot, fmt.Sprintf("run-%d-pending", time.Now().UnixNano()))
-	if err := os.MkdirAll(runDir, 0o755); err != nil {
-		return 0, fmt.Errorf("create run log directory: %w", err)
-	}
-	logPath := filepath.Join(runDir, fmt.Sprintf("host-%d.log", host.ID))
-	runID, hostRunID, err := s.Runs.CreateManualHostRun(ctx, host.ID, logPath)
-	if err != nil {
-		return 0, err
-	}
-	s.audit(ctx, "tui", "run.start", "host", &host.ID, map[string]any{"run_id": runID})
-
-	go s.executeManualRun(context.Background(), host, runID, hostRunID, logPath)
-	return runID, nil
 }
 
 type bootstrapSessionState struct {
@@ -430,56 +398,6 @@ func (s *HostService) dryRunWithRunner(ctx context.Context, runner remotessh.Run
 	return pkgmgr.ParseDryRunOutput(manager, result.Stdout+"\n"+result.Stderr, result.ExitCode)
 }
 
-func (s *HostService) executeManualRun(ctx context.Context, host Host, runID int64, hostRunID int64, logPath string) {
-	status := "failed"
-	exitCode := -1
-	packages := 0
-	summary := "manual run failed"
-	defer func() {
-		if err := s.Runs.FinishHostRun(context.Background(), runID, hostRunID, status, exitCode, packages, false, summary); err != nil && s.Logger != nil {
-			s.Logger.Error("finish manual run", "error", err, "run_id", runID)
-		}
-	}()
-
-	keypair, err := s.Keys.Ensure(ctx)
-	if err != nil {
-		summary = err.Error()
-		writeLog(logPath, summary)
-		return
-	}
-	runner, err := remotessh.ConnectKey(ctx, host.Hostname, host.SSHPort, host.SSHUser, keypair.Signer)
-	if err != nil {
-		summary = err.Error()
-		writeLog(logPath, summary)
-		return
-	}
-	defer runner.Close()
-
-	manager := pkgmgr.PackageManager(host.PackageManager)
-	paths, err := resolveCommandPaths(ctx, runner, nil, HostFacts{CurrentUID: "0", PackageManager: manager}, manager, nil)
-	if err != nil {
-		summary = err.Error()
-		writeLog(logPath, summary)
-		return
-	}
-	command, err := pkgmgr.UpdateCommand(manager, paths)
-	if err != nil {
-		summary = err.Error()
-		writeLog(logPath, summary)
-		return
-	}
-	result, err := runner.Run(ctx, command, nil)
-	logBody := stripANSI(result.Stdout + "\n" + result.Stderr)
-	writeLog(logPath, logBody)
-	exitCode = result.ExitCode
-	if err != nil {
-		summary = err.Error()
-		return
-	}
-	status = "success"
-	summary = "manual update completed"
-}
-
 func normalizePort(port int) int {
 	if port == 0 {
 		return 22
@@ -554,11 +472,6 @@ func (s *HostService) audit(ctx context.Context, actor string, action string, ta
 	if err := s.Audit.Create(ctx, AuditEvent{Actor: actor, Action: action, TargetType: targetType, TargetID: targetID, Details: string(payload)}); err != nil && s.Logger != nil {
 		s.Logger.Error("create audit event", "error", err)
 	}
-}
-
-func writeLog(path string, body string) {
-	_ = os.MkdirAll(filepath.Dir(path), 0o755)
-	_ = os.WriteFile(path, []byte(body), 0o640)
 }
 
 func stripANSI(value string) string {

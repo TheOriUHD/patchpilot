@@ -105,3 +105,21 @@ func VerifyCommand(manager PackageManager, paths map[string]string) (string, err
 		return "", fmt.Errorf("unsupported package manager %q", manager)
 	}
 }
+
+// RebootRequiredCommand returns a command that exits 0 when a reboot is required and non-zero otherwise.
+func RebootRequiredCommand(manager PackageManager, paths map[string]string) (string, error) {
+	switch manager {
+	case ManagerAPT, ManagerAPTProxmox:
+		return fmt.Sprintf("sudo -n %s -f /var/run/reboot-required", paths["test"]), nil
+	case ManagerDNF:
+		return fmt.Sprintf("sudo -n %s -q needs-restarting -r; code=$?; test \"$code\" -eq 1", paths["dnf"]), nil
+	case ManagerPacman:
+		return fmt.Sprintf("running=$(uname -r); installed=$(sudo -n %s -Q linux 2>/dev/null | awk '{print $2}'); test -n \"$installed\" && case \"$running\" in $installed*) exit 1;; *) exit 0;; esac", paths["pacman"]), nil
+	case ManagerZypper:
+		return fmt.Sprintf("running=$(uname -r); installed=$(sudo -n %s -n search -si kernel-default 2>/dev/null | awk '/^Version/ {print $3; exit}'); test -n \"$installed\" && case \"$running\" in $installed*) exit 1;; *) exit 0;; esac", paths["zypper"]), nil
+	case ManagerAPK:
+		return fmt.Sprintf("running=$(uname -r); installed=$(sudo -n %s info -v 'linux-*' 2>/dev/null | head -n 1 | sed 's/^[^-]*-//'); test -n \"$installed\" && case \"$running\" in $installed*) exit 1;; *) exit 0;; esac", paths["apk"]), nil
+	default:
+		return "", fmt.Errorf("unsupported package manager %q", manager)
+	}
+}

@@ -12,6 +12,7 @@ import (
 	"github.com/TheOriUHD/patchpilot/internal/core"
 	"github.com/TheOriUHD/patchpilot/internal/ipc"
 	"github.com/TheOriUHD/patchpilot/internal/logging"
+	"github.com/TheOriUHD/patchpilot/internal/scheduler"
 	remotessh "github.com/TheOriUHD/patchpilot/internal/ssh"
 	"github.com/TheOriUHD/patchpilot/internal/store"
 	"github.com/TheOriUHD/patchpilot/internal/stream"
@@ -60,13 +61,22 @@ func Run(ctx context.Context) error {
 	}
 
 	hostRepo := store.NewHostRepository(db)
-	runRepo := store.NewRunRepository(db)
+	runLogRoot := filepath.Join(filepath.Dir(cfg.Paths.LogPath), "runs")
+	runRepo := store.NewRunRepository(db, runLogRoot)
+	scheduleRepo := store.NewScheduleRepository(db)
 	auditRepo := store.NewAuditRepository(db)
 	keyStore := remotessh.NewKeyStore(cfg.Paths.DataDir)
 	streamHub := stream.NewHub()
-	hostService := core.NewHostService(hostRepo, runRepo, auditRepo, keyStore, streamHub, logger, filepath.Join(filepath.Dir(cfg.Paths.LogPath), "runs"))
+	logTailer := stream.NewLogTailer(350 * time.Millisecond)
+	hostService := core.NewHostService(hostRepo, auditRepo, keyStore, streamHub, logger)
+	orchestrator := core.NewOrchestrator(hostRepo, runRepo, scheduleRepo, auditRepo, keyStore, streamHub, logger)
+	orchestrator.Start(ctx)
+	scheduleEngine := scheduler.NewEngine(scheduleRepo, orchestrator, logger)
+	if err := scheduleEngine.Start(ctx); err != nil {
+		return fmt.Errorf("start scheduler: %w", err)
+	}
 
-	router := ipc.NewRouter(time.Now().UTC(), hostService)
+	router := ipc.NewRouter(time.Now().UTC(), hostService, orchestrator, scheduleEngine, logTailer)
 	server := ipc.NewServer(cfg.Paths.SocketPath, router, logger)
 	if err := server.Serve(ctx); err != nil {
 		return fmt.Errorf("serve daemon api: %w", err)

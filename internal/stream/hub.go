@@ -39,6 +39,27 @@ func (h *Hub) Create() (string, error) {
 	return id, nil
 }
 
+// Ensure creates a named session when it does not already exist.
+func (h *Hub) Ensure(sessionID string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if _, ok := h.sessions[sessionID]; ok {
+		return
+	}
+	h.sessions[sessionID] = &session{subscribers: make(map[chan Event]struct{})}
+}
+
+// SubscriberCount reports the current number of live subscribers for a session.
+func (h *Hub) SubscriberCount(sessionID string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	session, ok := h.sessions[sessionID]
+	if !ok {
+		return 0
+	}
+	return len(session.subscribers)
+}
+
 // Publish marshals data and publishes an event to a session.
 func (h *Hub) Publish(sessionID string, eventType string, data any) error {
 	payload, err := json.Marshal(data)
