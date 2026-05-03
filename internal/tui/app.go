@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/TheOriUHD/patchpilot/internal/config"
+	"github.com/TheOriUHD/patchpilot/internal/core"
 	"github.com/TheOriUHD/patchpilot/internal/ipc"
 	"github.com/TheOriUHD/patchpilot/internal/tui/components"
 	"github.com/TheOriUHD/patchpilot/internal/tui/theme"
@@ -66,6 +67,19 @@ type model struct {
 	daemonError  string
 	starting     bool
 	healthLoaded bool
+
+	hosts        []core.Host
+	hostLoading  bool
+	hostError    string
+	hostSelected int
+	hostFilter   string
+	filtering    bool
+	hostScreen   hostScreen
+	detailTab    int
+	renameMode   bool
+	renameBuffer string
+	pending      pendingAction
+	wizard       standardWizard
 }
 
 type healthLoadedMsg struct {
@@ -122,7 +136,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.daemonState = components.DaemonUp
 		m.daemonError = ""
 		m.status = "Connected to daemon " + typed.health.Version
-		return m, nil
+		m.hostLoading = true
+		return m, loadHostsCmd(m.ctx, m.client)
 	case daemonStartedMsg:
 		m.starting = false
 		if typed.err != nil {
@@ -134,6 +149,43 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.daemonState = components.DaemonChecking
 		m.status = "Daemon start requested"
 		return m, tea.Batch(m.spinner.Tick, checkHealthCmd(m.ctx, m.client))
+	case hostsLoadedMsg:
+		m.hostLoading = false
+		if typed.err != nil {
+			m.hostError = typed.err.Error()
+			m.status = "Could not load hosts"
+			return m, nil
+		}
+		m.hostError = ""
+		m.hosts = typed.hosts
+		if m.hostSelected >= len(m.filteredHosts()) {
+			m.hostSelected = max(0, len(m.filteredHosts())-1)
+		}
+		return m, nil
+	case hostMutationMsg:
+		m.pending = pendingAction{}
+		if typed.err != nil {
+			m.status = typed.err.Error()
+			return m, nil
+		}
+		m.status = typed.message
+		m.hostLoading = true
+		return m, loadHostsCmd(m.ctx, m.client)
+	case dryRunLoadedMsg:
+		if typed.err != nil {
+			m.status = typed.err.Error()
+			return m, nil
+		}
+		m.status = typed.result.Summary
+		return m, nil
+	case wizardMsg:
+		var cmd tea.Cmd
+		m, cmd = m.handleWizardMsg(typed)
+		return m, cmd
+	case bootstrapEventMsg:
+		var cmd tea.Cmd
+		m, cmd = m.handleBootstrapEvent(typed)
+		return m, cmd
 	default:
 		return m, nil
 	}
@@ -165,6 +217,10 @@ func (m model) View() string {
 }
 
 func (m model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.daemonState == components.DaemonUp && m.activeTab == 0 {
+		return m.handleHostsKey(key)
+	}
+
 	switch key.String() {
 	case "q", "ctrl+c":
 		return m, tea.Quit
@@ -203,7 +259,7 @@ func (m model) renderActiveTab(bodyHeight int) string {
 
 	switch m.activeTab {
 	case 0:
-		return m.renderHosts(bodyHeight)
+		return m.renderHostsView(bodyHeight)
 	case 1:
 		return m.centerCard(bodyHeight, m.styles.Card.Render(m.styles.CardTitle.Render("Schedules")+"\n\nNo schedules yet."))
 	case 2:
@@ -213,14 +269,6 @@ func (m model) renderActiveTab(bodyHeight int) string {
 	default:
 		return ""
 	}
-}
-
-func (m model) renderHosts(bodyHeight int) string {
-	card := m.styles.Card.Width(52).Render(
-		m.styles.CardTitle.Render("No hosts yet") + "\n\n" +
-			"Daemon connection is healthy. Host inventory is empty.",
-	)
-	return m.centerCard(bodyHeight, card)
 }
 
 func (m model) renderDaemonDown(bodyHeight int) string {
@@ -255,11 +303,30 @@ func (m model) centerCard(bodyHeight int, content string) string {
 }
 
 func (m model) keybinds() []string {
+	if m.daemonState == components.DaemonUp && m.activeTab == 0 {
+		return m.hostKeybinds()
+	}
 	keys := []string{"Tab switch", "1-4 tabs", "q quit"}
 	if m.daemonState == components.DaemonDown {
 		keys = append([]string{"s start daemon"}, keys...)
 	}
 	return keys
+}
+
+func loadHostsCmd(ctx context.Context, client *ipc.Client) tea.Cmd {
+	return func() tea.Msg {
+		loadCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		hosts, err := client.ListHosts(loadCtx)
+		return hostsLoadedMsg{hosts: hosts, err: err}
+	}
+}
+
+func max(left int, right int) int {
+	if left > right {
+		return left
+	}
+	return right
 }
 
 func checkHealthCmd(ctx context.Context, client *ipc.Client) tea.Cmd {

@@ -1,5 +1,7 @@
 package core
 
+import "time"
+
 // HostType identifies how patchpilot manages a host.
 type HostType string
 
@@ -16,17 +18,43 @@ const (
 
 // Host is the persisted inventory record for one managed system.
 type Host struct {
-	ID             int64
-	Name           string
-	Hostname       string
-	SSHPort        int
-	SSHUser        string
-	Type           HostType
-	PackageManager string
-	OSPretty       string
-	Arch           string
-	IsProxmoxHost  bool
-	IsSelf         bool
-	Enabled        bool
-	Notes          string
+	ID             int64      `json:"id"`
+	Name           string     `json:"name"`
+	Hostname       string     `json:"hostname"`
+	SSHPort        int        `json:"ssh_port"`
+	SSHUser        string     `json:"ssh_user"`
+	Type           HostType   `json:"host_type"`
+	PackageManager string     `json:"package_manager"`
+	OSPretty       string     `json:"os_pretty"`
+	Arch           string     `json:"arch"`
+	IsProxmoxHost  bool       `json:"is_proxmox_host"`
+	IsSelf         bool       `json:"is_self"`
+	Enabled        bool       `json:"enabled"`
+	Notes          string     `json:"notes"`
+	LastSeenAt     *time.Time `json:"last_seen_at,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+}
+
+// HostCreate describes a new host inventory record.
+type HostCreate struct {
+	Name           string   `json:"name"`
+	Hostname       string   `json:"hostname"`
+	SSHPort        int      `json:"ssh_port"`
+	SSHUser        string   `json:"ssh_user"`
+	Type           HostType `json:"host_type"`
+	PackageManager string   `json:"package_manager"`
+	OSPretty       string   `json:"os_pretty"`
+	Arch           string   `json:"arch"`
+	IsProxmoxHost  bool     `json:"is_proxmox_host"`
+	IsSelf         bool     `json:"is_self"`
+	Enabled        bool     `json:"enabled"`
+	Notes          string   `json:"notes"`
+}
+
+// HostUpdate describes mutable inventory fields.
+type HostUpdate struct {
+	Name    string `json:"name"`
+	Enabled bool   `json:"enabled"`
+	Notes   string `json:"notes"`
 }

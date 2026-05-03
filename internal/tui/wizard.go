@@ -1,0 +1,605 @@
+package tui
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/TheOriUHD/patchpilot/internal/core"
+	"github.com/TheOriUHD/patchpilot/internal/ipc"
+	"github.com/TheOriUHD/patchpilot/internal/stream"
+	"github.com/TheOriUHD/patchpilot/internal/tui/theme"
+)
+
+type wizardStep int
+
+const (
+	wizardStepInput wizardStep = iota
+	wizardStepDetecting
+	wizardStepDetected
+	wizardStepDiagnose
+	wizardStepPreinstall
+	wizardStepBootstrapping
+	wizardStepReview
+	wizardStepError
+)
+
+type standardWizard struct {
+	step         wizardStep
+	focus        int
+	hostType     int
+	hostname     string
+	sshUser      string
+	password     []byte
+	rootPassword []byte
+	name         string
+	notes        string
+	enabled      bool
+	facts        core.HostFacts
+	diagnosis    *core.PermissionDiagnosis
+	refusal      string
+	errorMessage string
+	sessionID    string
+	events       []core.BootstrapEvent
+	summary      *core.BootstrapSummary
+	streamEvents <-chan stream.Event
+	streamErrors <-chan error
+}
+
+type wizardMsg struct {
+	kind         string
+	detectResult core.StandardDetectResult
+	session      core.BootstrapSession
+	host         core.Host
+	events       <-chan stream.Event
+	errors       <-chan error
+	err          error
+}
+
+type bootstrapEventMsg struct {
+	event stream.Event
+	err   error
+	done  bool
+}
+
+func newStandardWizard() standardWizard {
+	return standardWizard{step: wizardStepInput, enabled: true}
+}
+
+func (m model) handleWizardKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if key.String() == "ctrl+c" || key.String() == "q" {
+		m.wizard.zeroSecrets()
+		if m.wizard.sessionID != "" {
+			return m, tea.Batch(cancelBootstrapCmd(m.ctx, m.client, m.wizard.sessionID), tea.Quit)
+		}
+		return m, tea.Quit
+	}
+	if key.String() == "esc" || key.String() == "ctrl+[" {
+		sessionID := m.wizard.sessionID
+		m.wizard.zeroSecrets()
+		m.hostScreen = hostScreenList
+		m.status = "Add host cancelled; secrets wiped"
+		if sessionID != "" {
+			return m, tea.Batch(cancelBootstrapCmd(m.ctx, m.client, sessionID), loadHostsCmd(m.ctx, m.client))
+		}
+		return m, loadHostsCmd(m.ctx, m.client)
+	}
+
+	switch m.wizard.step {
+	case wizardStepInput:
+		return m.handleWizardInputKey(key)
+	case wizardStepDetected:
+		if key.String() == "enter" {
+			m.wizard.step = wizardStepBootstrapping
+			m.wizard.events = nil
+			return m, startBootstrapCmd(m.ctx, m.client, m.wizard)
+		}
+	case wizardStepDiagnose:
+		return m.handleWizardDiagnoseKey(key)
+	case wizardStepPreinstall:
+		if key.String() == "r" {
+			m.wizard.step = wizardStepDetecting
+			return m, detectStandardCmd(m.ctx, m.client, m.wizard)
+		}
+	case wizardStepReview:
+		return m.handleWizardReviewKey(key)
+	case wizardStepError:
+		if key.String() == "r" {
+			m.wizard = newStandardWizard()
+			return m, nil
+		}
+	}
+	return m, nil
+}
+
+func (m model) handleWizardInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch key.String() {
+	case "tab", "down":
+		m.wizard.focus = (m.wizard.focus + 1) % 4
+		return m, nil
+	case "shift+tab", "up":
+		m.wizard.focus = (m.wizard.focus + 3) % 4
+		return m, nil
+	case "left":
+		if m.wizard.focus == 0 && m.wizard.hostType > 0 {
+			m.wizard.hostType--
+		}
+		return m, nil
+	case "right":
+		if m.wizard.focus == 0 && m.wizard.hostType < 2 {
+			m.wizard.hostType++
+		}
+		return m, nil
+	case "backspace":
+		m.wizard.backspaceFocused()
+		return m, nil
+	case "enter":
+		if m.wizard.hostType != 0 {
+			m.wizard.step = wizardStepError
+			m.wizard.errorMessage = "TrueNAS and Home Assistant OS onboarding are implemented in Milestone 4. Choose Standard for this milestone."
+			return m, nil
+		}
+		if strings.TrimSpace(m.wizard.hostname) == "" || strings.TrimSpace(m.wizard.sshUser) == "" || len(m.wizard.password) == 0 {
+			m.status = "Hostname, SSH user, and password are required"
+			return m, nil
+		}
+		m.wizard.step = wizardStepDetecting
+		return m, detectStandardCmd(m.ctx, m.client, m.wizard)
+	}
+	if len(key.Runes) > 0 {
+		m.wizard.appendFocused(string(key.Runes))
+	}
+	return m, nil
+}
+
+func (m model) handleWizardDiagnoseKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch key.String() {
+	case "tab", "down", "up", "shift+tab":
+		return m, nil
+	case "backspace":
+		if len(m.wizard.rootPassword) > 0 {
+			m.wizard.rootPassword = m.wizard.rootPassword[:len(m.wizard.rootPassword)-1]
+		}
+		return m, nil
+	case "f":
+		if len(m.wizard.rootPassword) == 0 {
+			m.status = "Root password is required for automatic fix"
+			return m, nil
+		}
+		return m, rootAssistCmd(m.ctx, m.client, m.wizard)
+	case "p":
+		m.wizard.step = wizardStepPreinstall
+		return m, nil
+	}
+	if len(key.Runes) > 0 {
+		m.wizard.rootPassword = append(m.wizard.rootPassword, []byte(string(key.Runes))...)
+	}
+	return m, nil
+}
+
+func (m model) handleWizardReviewKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch key.String() {
+	case "tab", "down":
+		m.wizard.focus = (m.wizard.focus + 1) % 3
+		return m, nil
+	case "shift+tab", "up":
+		m.wizard.focus = (m.wizard.focus + 2) % 3
+		return m, nil
+	case "backspace":
+		if m.wizard.focus == 0 && len(m.wizard.name) > 0 {
+			m.wizard.name = m.wizard.name[:len(m.wizard.name)-1]
+		}
+		if m.wizard.focus == 1 && len(m.wizard.notes) > 0 {
+			m.wizard.notes = m.wizard.notes[:len(m.wizard.notes)-1]
+		}
+		return m, nil
+	case " ":
+		if m.wizard.focus == 2 {
+			m.wizard.enabled = !m.wizard.enabled
+		}
+		return m, nil
+	case "enter":
+		return m, commitBootstrapCmd(m.ctx, m.client, m.wizard)
+	}
+	if len(key.Runes) > 0 {
+		if m.wizard.focus == 0 {
+			m.wizard.name += string(key.Runes)
+		}
+		if m.wizard.focus == 1 {
+			m.wizard.notes += string(key.Runes)
+		}
+	}
+	return m, nil
+}
+
+func (m model) handleWizardMsg(msg wizardMsg) (model, tea.Cmd) {
+	switch msg.kind {
+	case "detect":
+		if msg.err != nil {
+			m.wizard.zeroSecrets()
+			m.wizard.step = wizardStepError
+			m.wizard.errorMessage = msg.err.Error()
+			return m, nil
+		}
+		m.wizard.facts = msg.detectResult.Facts
+		m.wizard.diagnosis = msg.detectResult.Diagnosis
+		m.wizard.refusal = msg.detectResult.Refusal
+		if msg.detectResult.Refusal != "" {
+			m.wizard.zeroSecrets()
+			m.wizard.step = wizardStepError
+			m.wizard.errorMessage = msg.detectResult.Refusal
+			return m, nil
+		}
+		if msg.detectResult.Diagnosis != nil {
+			m.wizard.step = wizardStepDiagnose
+			return m, nil
+		}
+		m.wizard.step = wizardStepDetected
+		m.wizard.name = fallbackName(m.wizard.facts.Hostname, m.wizard.hostname)
+		return m, nil
+	case "root-assist":
+		core.ZeroBytes(m.wizard.rootPassword)
+		m.wizard.rootPassword = nil
+		if msg.err != nil {
+			m.wizard.step = wizardStepError
+			m.wizard.zeroSecrets()
+			m.wizard.errorMessage = msg.err.Error()
+			return m, nil
+		}
+		m.wizard.step = wizardStepDetecting
+		return m, detectStandardCmd(m.ctx, m.client, m.wizard)
+	case "bootstrap-started":
+		if msg.err != nil {
+			m.wizard.zeroSecrets()
+			m.wizard.step = wizardStepError
+			m.wizard.errorMessage = msg.err.Error()
+			return m, nil
+		}
+		m.wizard.sessionID = msg.session.ID
+		m.wizard.streamEvents = msg.events
+		m.wizard.streamErrors = msg.errors
+		return m, nextBootstrapEventCmd(msg.events, msg.errors)
+	case "commit":
+		m.wizard.zeroSecrets()
+		if msg.err != nil {
+			m.wizard.step = wizardStepError
+			m.wizard.errorMessage = msg.err.Error()
+			return m, nil
+		}
+		m.hostScreen = hostScreenList
+		m.status = "Host saved: " + msg.host.Name
+		m.hostLoading = true
+		return m, loadHostsCmd(m.ctx, m.client)
+	}
+	return m, nil
+}
+
+func (m model) handleBootstrapEvent(msg bootstrapEventMsg) (model, tea.Cmd) {
+	if msg.err != nil {
+		m.wizard.zeroSecrets()
+		m.wizard.step = wizardStepError
+		m.wizard.errorMessage = msg.err.Error()
+		return m, nil
+	}
+	if msg.done {
+		return m, nil
+	}
+	switch msg.event.Type {
+	case "bootstrap.step":
+		var event core.BootstrapEvent
+		if err := json.Unmarshal(msg.event.Data, &event); err == nil {
+			m.wizard.events = append(m.wizard.events, event)
+		}
+	case "bootstrap.complete":
+		var summary core.BootstrapSummary
+		if err := json.Unmarshal(msg.event.Data, &summary); err == nil {
+			m.wizard.summary = &summary
+			m.wizard.step = wizardStepReview
+			m.wizard.focus = 0
+			m.wizard.name = fallbackName(summary.Facts.Hostname, m.wizard.hostname)
+			m.wizard.zeroSecrets()
+			return m, nil
+		}
+	case "bootstrap.error":
+		var payload map[string]string
+		_ = json.Unmarshal(msg.event.Data, &payload)
+		m.wizard.zeroSecrets()
+		m.wizard.step = wizardStepError
+		m.wizard.errorMessage = payload["error"]
+		return m, nil
+	}
+	return m, nextBootstrapEventCmd(m.wizard.streamEvents, m.wizard.streamErrors)
+}
+
+func (m model) renderWizard(bodyHeight int) string {
+	var content string
+	switch m.wizard.step {
+	case wizardStepInput:
+		content = m.renderWizardInput()
+	case wizardStepDetecting:
+		content = m.styles.Card.Width(66).Render(m.spinner.View() + " Connecting and detecting")
+	case wizardStepDetected:
+		content = m.renderWizardDetected()
+	case wizardStepDiagnose:
+		content = m.renderWizardDiagnose()
+	case wizardStepPreinstall:
+		content = m.renderWizardPreinstall()
+	case wizardStepBootstrapping:
+		content = m.renderWizardBootstrap()
+	case wizardStepReview:
+		content = m.renderWizardReview()
+	case wizardStepError:
+		content = m.styles.Card.Width(72).Render(m.styles.ErrorText.Render("Wizard stopped") + "\n\n" + m.wizard.errorMessage + "\n\nPress r to start over or Esc to return to Hosts.")
+	}
+	return m.centerCard(bodyHeight, content)
+}
+
+func (m model) renderWizardInput() string {
+	types := []string{"Standard", "TrueNAS", "Home Assistant OS"}
+	var builder strings.Builder
+	builder.WriteString(m.styles.CardTitle.Render("Add new host"))
+	builder.WriteString("\n\nHost type: ")
+	for index, label := range types {
+		marker := "( ) "
+		if index == m.wizard.hostType {
+			marker = "(*) "
+		}
+		text := marker + label
+		if m.wizard.focus == 0 && index == m.wizard.hostType {
+			builder.WriteString(m.styles.ActiveTab.Render(text))
+		} else {
+			builder.WriteString(text)
+		}
+		builder.WriteString("  ")
+	}
+	builder.WriteString("\n\n")
+	builder.WriteString(m.inputLine("Hostname or IP", m.wizard.hostname, m.wizard.focus == 1, false))
+	builder.WriteByte('\n')
+	builder.WriteString(m.inputLine("SSH user", m.wizard.sshUser, m.wizard.focus == 2, false))
+	builder.WriteByte('\n')
+	builder.WriteString(m.inputLine("Password", strings.Repeat("*", len(m.wizard.password)), m.wizard.focus == 3, true))
+	builder.WriteString("\n\nEnter Go   Esc Cancel")
+	return m.styles.Card.Width(74).Render(builder.String())
+}
+
+func (m model) renderWizardDetected() string {
+	facts := m.wizard.facts
+	lines := []string{
+		theme.SymbolOK + " Connected to " + m.wizard.hostname + " as " + m.wizard.sshUser,
+		theme.SymbolOK + " OS: " + facts.OSPretty,
+		theme.SymbolOK + " Package: " + string(facts.PackageManager),
+		theme.SymbolOK + " Arch: " + facts.Arch,
+	}
+	if facts.IsProxmox {
+		lines = append(lines, theme.SymbolWarning+" Proxmox VE detected - using apt-get dist-upgrade")
+	}
+	if !facts.PatchpilotUserExists {
+		lines = append(lines, theme.SymbolWarning+" patchpilot user: not present, will be created")
+	}
+	lines = append(lines, "", "Enter to bootstrap   Esc cancel")
+	return m.styles.Card.Width(76).Render(m.styles.CardTitle.Render("Detection summary") + "\n\n" + strings.Join(lines, "\n"))
+}
+
+func (m model) renderWizardDiagnose() string {
+	diagnosis := m.wizard.diagnosis
+	var builder strings.Builder
+	builder.WriteString(m.styles.ErrorText.Render(theme.SymbolError + " Permission diagnosis"))
+	builder.WriteString("\n\n")
+	builder.WriteString(diagnosis.Reason)
+	builder.WriteString("\n\n")
+	builder.WriteString(diagnosis.PathForward)
+	builder.WriteString("\n\nRoot password: ")
+	builder.WriteString(strings.Repeat("*", len(m.wizard.rootPassword)))
+	builder.WriteString("\n\nManual fix:\n")
+	for _, command := range diagnosis.ManualFix {
+		builder.WriteString("  ")
+		builder.WriteString(command)
+		builder.WriteByte('\n')
+	}
+	builder.WriteString("\nf Fix automatically   p Pre-install mode   Esc cancel")
+	return m.styles.Card.Width(76).Render(builder.String())
+}
+
+func (m model) renderWizardPreinstall() string {
+	manager := m.wizard.facts.PackageManager
+	commands := []string{
+		"install -d -m 0700 -o patchpilot -g patchpilot /home/patchpilot/.ssh",
+		"# paste the orchestrator public key into /home/patchpilot/.ssh/authorized_keys",
+		"# resolve package-manager paths with command -v before writing sudoers",
+		"visudo -cf /etc/sudoers.d/patchpilot",
+	}
+	return m.styles.Card.Width(76).Render(m.styles.CardTitle.Render("Pre-install mode") + "\n\nPackage manager: " + string(manager) + "\n\n" + strings.Join(commands, "\n") + "\n\nAfter installing the key and sudoers entry, press r to retry detection.")
+}
+
+func (m model) renderWizardBootstrap() string {
+	var builder strings.Builder
+	builder.WriteString(m.styles.CardTitle.Render("Bootstrap progress"))
+	builder.WriteString("\n\n")
+	for _, event := range m.wizard.events {
+		symbol := theme.SymbolPending
+		if event.Status == core.BootstrapStepSuccess {
+			symbol = theme.SymbolOK
+		}
+		if event.Status == core.BootstrapStepFailed {
+			symbol = theme.SymbolError
+		}
+		builder.WriteString(symbol)
+		builder.WriteByte(' ')
+		builder.WriteString(event.Step)
+		if event.Message != "" {
+			builder.WriteString(" - ")
+			builder.WriteString(event.Message)
+		}
+		builder.WriteByte('\n')
+	}
+	if len(m.wizard.events) == 0 {
+		builder.WriteString(m.spinner.View())
+		builder.WriteString(" Waiting for bootstrap stream")
+	}
+	return m.styles.Card.Width(78).Render(builder.String())
+}
+
+func (m model) renderWizardReview() string {
+	summary := m.wizard.summary
+	if summary == nil {
+		return m.styles.Card.Render("Preparing review")
+	}
+	var builder strings.Builder
+	builder.WriteString(m.styles.CardTitle.Render("Review and save"))
+	builder.WriteString("\n\n")
+	builder.WriteString(m.inputLine("Host", m.wizard.name, m.wizard.focus == 0, false))
+	builder.WriteByte('\n')
+	builder.WriteString("Type: Standard")
+	if summary.Facts.IsProxmox {
+		builder.WriteString(" / Proxmox VE")
+	}
+	builder.WriteString("\nPackage: ")
+	builder.WriteString(string(summary.Facts.PackageManager))
+	builder.WriteString("\nSSH user: patchpilot")
+	builder.WriteString("\nSchedule: Manual only")
+	builder.WriteString("\n")
+	builder.WriteString(m.inputLine("Notes", m.wizard.notes, m.wizard.focus == 1, false))
+	builder.WriteString("\nEnabled: ")
+	check := "[ ]"
+	if m.wizard.enabled {
+		check = "[x]"
+	}
+	if m.wizard.focus == 2 {
+		builder.WriteString(m.styles.ActiveTab.Render(check))
+	} else {
+		builder.WriteString(check)
+	}
+	builder.WriteString(fmt.Sprintf("\n\nDry run: %s\n", summary.DryRun.Summary))
+	builder.WriteString("\nEnter Save   Space toggle enabled   Esc cancel")
+	return m.styles.Card.Width(78).Render(builder.String())
+}
+
+func (m model) inputLine(label string, value string, focused bool, secret bool) string {
+	field := fmt.Sprintf("%-15s [%s]", label+":", value)
+	if secret && value == "" {
+		field = fmt.Sprintf("%-15s [%s]", label+":", "")
+	}
+	if focused {
+		return m.styles.ActiveTab.Render(field)
+	}
+	return field
+}
+
+func (w *standardWizard) appendFocused(value string) {
+	switch w.focus {
+	case 1:
+		w.hostname += value
+	case 2:
+		w.sshUser += value
+	case 3:
+		w.password = append(w.password, []byte(value)...)
+	}
+}
+
+func (w *standardWizard) backspaceFocused() {
+	switch w.focus {
+	case 1:
+		if len(w.hostname) > 0 {
+			w.hostname = w.hostname[:len(w.hostname)-1]
+		}
+	case 2:
+		if len(w.sshUser) > 0 {
+			w.sshUser = w.sshUser[:len(w.sshUser)-1]
+		}
+	case 3:
+		if len(w.password) > 0 {
+			w.password[len(w.password)-1] = 0
+			w.password = w.password[:len(w.password)-1]
+		}
+	}
+}
+
+func (w *standardWizard) zeroSecrets() {
+	core.ZeroBytes(w.password)
+	core.ZeroBytes(w.rootPassword)
+	w.password = nil
+	w.rootPassword = nil
+}
+
+func detectStandardCmd(ctx context.Context, client *ipc.Client, wizard standardWizard) tea.Cmd {
+	input := core.StandardDetectInput{Hostname: strings.TrimSpace(wizard.hostname), SSHPort: 22, SSHUser: strings.TrimSpace(wizard.sshUser), Password: append([]byte{}, wizard.password...)}
+	return func() tea.Msg {
+		defer core.ZeroBytes(input.Password)
+		requestCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+		defer cancel()
+		result, err := client.DetectStandard(requestCtx, input)
+		return wizardMsg{kind: "detect", detectResult: result, err: err}
+	}
+}
+
+func rootAssistCmd(ctx context.Context, client *ipc.Client, wizard standardWizard) tea.Cmd {
+	input := core.RootAssistInput{Hostname: strings.TrimSpace(wizard.hostname), SSHPort: 22, SSHUser: strings.TrimSpace(wizard.sshUser), RootPassword: append([]byte{}, wizard.rootPassword...), Facts: wizard.facts, Diagnosis: wizard.diagnosis}
+	return func() tea.Msg {
+		defer core.ZeroBytes(input.RootPassword)
+		requestCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		defer cancel()
+		err := client.RootAssist(requestCtx, input)
+		return wizardMsg{kind: "root-assist", err: err}
+	}
+}
+
+func startBootstrapCmd(ctx context.Context, client *ipc.Client, wizard standardWizard) tea.Cmd {
+	input := core.BootstrapStartInput{Hostname: strings.TrimSpace(wizard.hostname), SSHPort: 22, SSHUser: strings.TrimSpace(wizard.sshUser), Password: append([]byte{}, wizard.password...), Facts: wizard.facts}
+	return func() tea.Msg {
+		defer core.ZeroBytes(input.Password)
+		requestCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		session, err := client.StartBootstrap(requestCtx, input)
+		if err != nil {
+			return wizardMsg{kind: "bootstrap-started", err: err}
+		}
+		events, errors := client.WizardEvents(ctx, session.ID)
+		return wizardMsg{kind: "bootstrap-started", session: session, events: events, errors: errors}
+	}
+}
+
+func nextBootstrapEventCmd(events <-chan stream.Event, errors <-chan error) tea.Cmd {
+	return func() tea.Msg {
+		select {
+		case err, ok := <-errors:
+			if ok && err != nil {
+				return bootstrapEventMsg{err: err}
+			}
+			return bootstrapEventMsg{done: true}
+		case event, ok := <-events:
+			if !ok {
+				return bootstrapEventMsg{done: true}
+			}
+			return bootstrapEventMsg{event: event}
+		}
+	}
+}
+
+func commitBootstrapCmd(ctx context.Context, client *ipc.Client, wizard standardWizard) tea.Cmd {
+	input := core.CommitHostInput{SessionID: wizard.sessionID, Name: strings.TrimSpace(wizard.name), Notes: wizard.notes, Enabled: wizard.enabled}
+	return func() tea.Msg {
+		requestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		host, err := client.CommitBootstrap(requestCtx, input)
+		return wizardMsg{kind: "commit", host: host, err: err}
+	}
+}
+
+func cancelBootstrapCmd(ctx context.Context, client *ipc.Client, sessionID string) tea.Cmd {
+	return func() tea.Msg {
+		requestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		_ = client.CancelBootstrap(requestCtx, sessionID)
+		return nil
+	}
+}
+
+func fallbackName(primary string, fallback string) string {
+	if strings.TrimSpace(primary) != "" {
+		return strings.TrimSpace(primary)
+	}
+	return strings.TrimSpace(fallback)
+}

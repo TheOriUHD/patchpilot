@@ -5,12 +5,16 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/TheOriUHD/patchpilot/internal/config"
+	"github.com/TheOriUHD/patchpilot/internal/core"
 	"github.com/TheOriUHD/patchpilot/internal/ipc"
 	"github.com/TheOriUHD/patchpilot/internal/logging"
+	remotessh "github.com/TheOriUHD/patchpilot/internal/ssh"
 	"github.com/TheOriUHD/patchpilot/internal/store"
+	"github.com/TheOriUHD/patchpilot/internal/stream"
 	"github.com/TheOriUHD/patchpilot/migrations"
 )
 
@@ -55,7 +59,14 @@ func Run(ctx context.Context) error {
 		logger.Warn("recovered orphaned running runs", "count", recovered)
 	}
 
-	router := ipc.NewRouter(time.Now().UTC())
+	hostRepo := store.NewHostRepository(db)
+	runRepo := store.NewRunRepository(db)
+	auditRepo := store.NewAuditRepository(db)
+	keyStore := remotessh.NewKeyStore(cfg.Paths.DataDir)
+	streamHub := stream.NewHub()
+	hostService := core.NewHostService(hostRepo, runRepo, auditRepo, keyStore, streamHub, logger, filepath.Join(filepath.Dir(cfg.Paths.LogPath), "runs"))
+
+	router := ipc.NewRouter(time.Now().UTC(), hostService)
 	server := ipc.NewServer(cfg.Paths.SocketPath, router, logger)
 	if err := server.Serve(ctx); err != nil {
 		return fmt.Errorf("serve daemon api: %w", err)
