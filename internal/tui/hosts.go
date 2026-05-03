@@ -319,7 +319,11 @@ func (m model) renderHostDetail(bodyHeight int) string {
 	}
 	switch m.detailTab {
 	case 0:
-		builder.WriteString(fmt.Sprintf("Hostname: %s:%d\n", host.Hostname, host.SSHPort))
+		if host.Type == core.HostTypeTrueNAS || host.Type == core.HostTypeHAOS || host.PackageManager == string(pkgmgr.ManagerTrueNASAPI) || host.PackageManager == string(pkgmgr.ManagerHAOSAPI) {
+			builder.WriteString(fmt.Sprintf("Endpoint: %s\n", host.Hostname))
+		} else {
+			builder.WriteString(fmt.Sprintf("Hostname: %s:%d\n", host.Hostname, host.SSHPort))
+		}
 		builder.WriteString(fmt.Sprintf("Type: %s\nPackage: %s\nOS: %s\nArch: %s\nEnabled: %v\nReboot: %s\nNotes: %s\n", host.Type, host.PackageManager, host.OSPretty, host.Arch, host.Enabled, m.hostRebootHint(host.ID), host.Notes))
 		builder.WriteString("\nActions: u update  d dry run  n rename  e enable/disable  x remove  q back")
 	case 1:

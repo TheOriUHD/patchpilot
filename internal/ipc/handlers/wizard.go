@@ -60,6 +60,54 @@ func RegisterWizard(router chi.Router, service *core.HostService) {
 			writeJSON(w, http.StatusAccepted, session)
 		})
 
+		r.Post("/api/verify", func(w http.ResponseWriter, req *http.Request) {
+			var input apiHostRequest
+			if err := readJSON(req, &input); err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			token := []byte(input.APIToken)
+			defer core.ZeroBytes(token)
+			result, err := service.VerifyAPIHost(req.Context(), core.APIHostVerifyInput{Type: input.Type, Endpoint: input.Endpoint, APIToken: token})
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, result)
+		})
+
+		r.Post("/api/check", func(w http.ResponseWriter, req *http.Request) {
+			var input apiHostRequest
+			if err := readJSON(req, &input); err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			token := []byte(input.APIToken)
+			defer core.ZeroBytes(token)
+			result, err := service.CheckAPIHost(req.Context(), core.APIHostVerifyInput{Type: input.Type, Endpoint: input.Endpoint, APIToken: token})
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, result)
+		})
+
+		r.Post("/api/commit", func(w http.ResponseWriter, req *http.Request) {
+			var input apiHostCommitRequest
+			if err := readJSON(req, &input); err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			token := []byte(input.APIToken)
+			defer core.ZeroBytes(token)
+			host, err := service.CommitAPIHost(req.Context(), core.APIHostCommitInput{Type: input.Type, Endpoint: input.Endpoint, APIToken: token, Name: input.Name, Notes: input.Notes, Enabled: input.Enabled})
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			writeJSON(w, http.StatusCreated, host)
+		})
+
 		r.Post("/{id}/commit", func(w http.ResponseWriter, req *http.Request) {
 			var input core.CommitHostInput
 			if err := readJSON(req, &input); err != nil {
@@ -117,6 +165,21 @@ type bootstrapStartRequest struct {
 	SSHUser  string         `json:"ssh_user"`
 	Password string         `json:"password"`
 	Facts    core.HostFacts `json:"facts"`
+}
+
+type apiHostRequest struct {
+	Type     core.HostType `json:"host_type"`
+	Endpoint string        `json:"endpoint"`
+	APIToken string        `json:"api_token"`
+}
+
+type apiHostCommitRequest struct {
+	Type     core.HostType `json:"host_type"`
+	Endpoint string        `json:"endpoint"`
+	APIToken string        `json:"api_token"`
+	Name     string        `json:"name"`
+	Notes    string        `json:"notes"`
+	Enabled  bool          `json:"enabled"`
 }
 
 func serveSSE(ctx context.Context, w http.ResponseWriter, events <-chan stream.Event) {

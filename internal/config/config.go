@@ -16,11 +16,12 @@ type Config struct {
 
 // Paths contains filesystem locations used by patchpilot.
 type Paths struct {
-	ConfigPath   string `yaml:"-"`
-	DataDir      string `yaml:"data_dir"`
-	DatabasePath string `yaml:"database_path"`
-	SocketPath   string `yaml:"socket_path"`
-	LogPath      string `yaml:"log_path"`
+	ConfigPath    string `yaml:"-"`
+	DataDir       string `yaml:"data_dir"`
+	DatabasePath  string `yaml:"database_path"`
+	SocketPath    string `yaml:"socket_path"`
+	LogPath       string `yaml:"log_path"`
+	SecretKeyPath string `yaml:"secret_key_path"`
 }
 
 // Load reads config.yaml when present, applies defaults, and overlays env vars.
@@ -78,6 +79,9 @@ func mergeConfig(base Config, loaded Config) Config {
 	if loaded.Paths.LogPath != "" {
 		base.Paths.LogPath = loaded.Paths.LogPath
 	}
+	if loaded.Paths.SecretKeyPath != "" {
+		base.Paths.SecretKeyPath = loaded.Paths.SecretKeyPath
+	}
 	return base
 }
 
@@ -93,5 +97,8 @@ func applyEnv(cfg *Config) {
 	}
 	if value := os.Getenv("PATCHPILOT_LOG_PATH"); value != "" {
 		cfg.Paths.LogPath = value
+	}
+	if value := os.Getenv("PATCHPILOT_SECRET_KEY_PATH"); value != "" {
+		cfg.Paths.SecretKeyPath = value
 	}
 }

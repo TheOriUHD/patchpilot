@@ -206,6 +206,36 @@ func (c *Client) StartBootstrap(ctx context.Context, input core.BootstrapStartIn
 	return session, nil
 }
 
+// VerifyAPIHost verifies a native API host endpoint and token.
+func (c *Client) VerifyAPIHost(ctx context.Context, input core.APIHostVerifyInput) (core.APIHostVerifyResult, error) {
+	var result core.APIHostVerifyResult
+	body := map[string]any{"host_type": input.Type, "endpoint": input.Endpoint, "api_token": string(input.APIToken)}
+	if err := c.doJSON(ctx, http.MethodPost, "/api/wizard/api/verify", body, &result); err != nil {
+		return core.APIHostVerifyResult{}, err
+	}
+	return result, nil
+}
+
+// CheckAPIHost performs the native API host update-check dry-run.
+func (c *Client) CheckAPIHost(ctx context.Context, input core.APIHostVerifyInput) (core.APIHostVerifyResult, error) {
+	var result core.APIHostVerifyResult
+	body := map[string]any{"host_type": input.Type, "endpoint": input.Endpoint, "api_token": string(input.APIToken)}
+	if err := c.doJSON(ctx, http.MethodPost, "/api/wizard/api/check", body, &result); err != nil {
+		return core.APIHostVerifyResult{}, err
+	}
+	return result, nil
+}
+
+// CommitAPIHost saves a verified native API host to inventory.
+func (c *Client) CommitAPIHost(ctx context.Context, input core.APIHostCommitInput) (core.Host, error) {
+	var host core.Host
+	body := map[string]any{"host_type": input.Type, "endpoint": input.Endpoint, "api_token": string(input.APIToken), "name": input.Name, "notes": input.Notes, "enabled": input.Enabled}
+	if err := c.doJSON(ctx, http.MethodPost, "/api/wizard/api/commit", body, &host); err != nil {
+		return core.Host{}, err
+	}
+	return host, nil
+}
+
 // CommitBootstrap saves a completed bootstrap session to inventory.
 func (c *Client) CommitBootstrap(ctx context.Context, input core.CommitHostInput) (core.Host, error) {
 	var host core.Host

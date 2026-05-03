@@ -12,9 +12,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/TheOriUHD/patchpilot/internal/haos"
 	"github.com/TheOriUHD/patchpilot/internal/pkgmgr"
 	remotessh "github.com/TheOriUHD/patchpilot/internal/ssh"
 	"github.com/TheOriUHD/patchpilot/internal/stream"
+	"github.com/TheOriUHD/patchpilot/internal/truenas"
 )
 
 // ErrScheduledOverlap is returned when a scheduled fire is skipped because another run is active.
@@ -53,6 +55,7 @@ type Orchestrator struct {
 	Schedules OrchestratorScheduleStore
 	Audit     AuditRepository
 	Keys      *remotessh.KeyStore
+	Secrets   SecretCipher
 	Streams   *stream.Hub
 	Logger    *slog.Logger
 
@@ -62,8 +65,12 @@ type Orchestrator struct {
 }
 
 // NewOrchestrator creates a run orchestrator.
-func NewOrchestrator(hosts HostRepository, runs OrchestratorRunStore, schedules OrchestratorScheduleStore, audit AuditRepository, keys *remotessh.KeyStore, streams *stream.Hub, logger *slog.Logger) *Orchestrator {
-	return &Orchestrator{Hosts: hosts, Runs: runs, Schedules: schedules, Audit: audit, Keys: keys, Streams: streams, Logger: logger}
+func NewOrchestrator(hosts HostRepository, runs OrchestratorRunStore, schedules OrchestratorScheduleStore, audit AuditRepository, keys *remotessh.KeyStore, streams *stream.Hub, logger *slog.Logger, secrets ...SecretCipher) *Orchestrator {
+	var cipher SecretCipher
+	if len(secrets) > 0 {
+		cipher = secrets[0]
+	}
+	return &Orchestrator{Hosts: hosts, Runs: runs, Schedules: schedules, Audit: audit, Keys: keys, Secrets: cipher, Streams: streams, Logger: logger}
 }
 
 // Start resumes the oldest queued manual/CLI run if no run is active after crash recovery.
@@ -314,12 +321,10 @@ func (o *Orchestrator) finishActive(runID int64) {
 
 func (o *Orchestrator) executeHostRun(ctx context.Context, host Host, hostRun HostRun) hostOutcome {
 	if host.Type == HostTypeTrueNAS || pkgmgr.PackageManager(host.PackageManager) == pkgmgr.ManagerTrueNASAPI {
-		appendCleanLog(hostRun.LogPath, "TrueNAS update execution arrives in Milestone 4.\n")
-		return hostOutcome{Status: HostRunStatusSkipped, ExitCode: 0, Summary: "TrueNAS updates arrive in Milestone 4"}
+		return o.executeTrueNASRun(ctx, host, hostRun)
 	}
 	if host.Type == HostTypeHAOS || pkgmgr.PackageManager(host.PackageManager) == pkgmgr.ManagerHAOSAPI {
-		appendCleanLog(hostRun.LogPath, "HAOS update execution arrives in Milestone 4.\n")
-		return hostOutcome{Status: HostRunStatusSkipped, ExitCode: 0, Summary: "HAOS updates arrive in Milestone 4"}
+		return o.executeHAOSRun(ctx, host, hostRun)
 	}
 	if host.IsSelf {
 		appendCleanLog(hostRun.LogPath, "Self-update execution arrives in Milestone 5.\n")
@@ -375,6 +380,70 @@ func (o *Orchestrator) executeHostRun(ctx context.Context, host Host, hostRun Ho
 	}
 	rebootRequired := o.checkRebootRequired(ctx, runner, manager, paths, hostRun.LogPath)
 	return hostOutcome{Status: HostRunStatusSuccess, ExitCode: result.ExitCode, RebootRequired: rebootRequired, Summary: "update completed"}
+}
+
+func (o *Orchestrator) executeTrueNASRun(ctx context.Context, host Host, hostRun HostRun) hostOutcome {
+	appendCleanLog(hostRun.LogPath, fmt.Sprintf("patchpilot TrueNAS host %s started at %s\n", host.Name, time.Now().UTC().Format(time.RFC3339)))
+	token, err := o.decryptHostAPIToken(ctx, host.ID)
+	if err != nil {
+		appendCleanLog(hostRun.LogPath, err.Error()+"\n")
+		return hostOutcome{Status: HostRunStatusFailed, ExitCode: -1, Summary: err.Error()}
+	}
+	client := truenas.New(host.Hostname, token)
+	info, err := client.Verify(ctx)
+	if err != nil {
+		appendCleanLog(hostRun.LogPath, err.Error()+"\n")
+		return hostOutcome{Status: HostRunStatusFailed, ExitCode: -1, Summary: err.Error()}
+	}
+	appendCleanLog(hostRun.LogPath, "TrueNAS SCALE version: "+info.Version+"\n")
+	result, err := client.ApplyUpdate(ctx, func(line string) { appendCleanLog(hostRun.LogPath, line) })
+	if err != nil {
+		appendCleanLog(hostRun.LogPath, err.Error()+"\n")
+		return hostOutcome{Status: HostRunStatusFailed, ExitCode: -1, Summary: err.Error()}
+	}
+	packages := 0
+	if result.Applied {
+		packages = 1
+	}
+	return hostOutcome{Status: HostRunStatusSuccess, ExitCode: 0, Packages: packages, RebootRequired: result.RebootRequired, Summary: result.Summary}
+}
+
+func (o *Orchestrator) executeHAOSRun(ctx context.Context, host Host, hostRun HostRun) hostOutcome {
+	appendCleanLog(hostRun.LogPath, fmt.Sprintf("patchpilot HAOS host %s started at %s\n", host.Name, time.Now().UTC().Format(time.RFC3339)))
+	token, err := o.decryptHostAPIToken(ctx, host.ID)
+	if err != nil {
+		appendCleanLog(hostRun.LogPath, err.Error()+"\n")
+		return hostOutcome{Status: HostRunStatusFailed, ExitCode: -1, Summary: err.Error()}
+	}
+	client := haos.New(host.Hostname, token)
+	info, err := client.Verify(ctx)
+	if err != nil {
+		appendCleanLog(hostRun.LogPath, err.Error()+"\n")
+		return hostOutcome{Status: HostRunStatusFailed, ExitCode: -1, Summary: err.Error()}
+	}
+	appendCleanLog(hostRun.LogPath, "HAOS Supervisor version: "+info.Supervisor.Version+"\n")
+	appendCleanLog(hostRun.LogPath, "HAOS Core version: "+info.Core.Version+"\n")
+	result, err := client.ApplyUpdates(ctx, func(line string) { appendCleanLog(hostRun.LogPath, line) })
+	if err != nil {
+		appendCleanLog(hostRun.LogPath, err.Error()+"\n")
+		return hostOutcome{Status: HostRunStatusFailed, ExitCode: -1, Summary: err.Error()}
+	}
+	return hostOutcome{Status: HostRunStatusSuccess, ExitCode: 0, Packages: len(result.Updated), RebootRequired: false, Summary: result.Summary}
+}
+
+func (o *Orchestrator) decryptHostAPIToken(ctx context.Context, hostID int64) (string, error) {
+	if o.Secrets == nil {
+		return "", fmt.Errorf("API token encryption is not configured")
+	}
+	tokenStore, ok := o.Hosts.(HostAPITokenRepository)
+	if !ok {
+		return "", fmt.Errorf("host token storage is not configured")
+	}
+	encrypted, err := tokenStore.GetAPIToken(ctx, hostID)
+	if err != nil {
+		return "", err
+	}
+	return o.Secrets.DecryptString(ctx, encrypted.Ciphertext, encrypted.Nonce)
 }
 
 func (o *Orchestrator) checkRebootRequired(ctx context.Context, runner remotessh.Runner, manager pkgmgr.PackageManager, paths map[string]string, logPath string) bool {

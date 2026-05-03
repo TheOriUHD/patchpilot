@@ -70,9 +70,9 @@ func (r *HostRepository) Create(ctx context.Context, input core.HostCreate) (cor
 		port = 22
 	}
 	result, err := r.db.ExecContext(ctx, `
-        INSERT INTO hosts (name, hostname, ssh_port, ssh_user, host_type, package_manager, os_pretty, arch, is_proxmox_host, is_self, enabled, notes, last_seen_at)
-        VALUES (?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, ?, CURRENT_TIMESTAMP)
-    `, input.Name, input.Hostname, port, input.SSHUser, input.Type, input.PackageManager, input.OSPretty, input.Arch, boolInt(input.IsProxmoxHost), boolInt(input.IsSelf), boolInt(input.Enabled), input.Notes)
+        INSERT INTO hosts (name, hostname, ssh_port, ssh_user, host_type, package_manager, os_pretty, arch, is_proxmox_host, is_self, api_token, api_token_nonce, enabled, notes, last_seen_at)
+        VALUES (?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, CURRENT_TIMESTAMP)
+    `, input.Name, input.Hostname, port, input.SSHUser, input.Type, input.PackageManager, input.OSPretty, input.Arch, boolInt(input.IsProxmoxHost), boolInt(input.IsSelf), input.APITokenCiphertext, input.APITokenNonce, boolInt(input.Enabled), input.Notes)
 	if err != nil {
 		return core.Host{}, fmt.Errorf("create host: %w", err)
 	}
@@ -81,6 +81,18 @@ func (r *HostRepository) Create(ctx context.Context, input core.HostCreate) (cor
 		return core.Host{}, fmt.Errorf("created host id: %w", err)
 	}
 	return r.Get(ctx, id)
+}
+
+// GetAPIToken returns the encrypted API token for an API-managed host.
+func (r *HostRepository) GetAPIToken(ctx context.Context, id int64) (core.EncryptedSecret, error) {
+	var token core.EncryptedSecret
+	if err := r.db.QueryRowContext(ctx, `SELECT COALESCE(api_token, ''), COALESCE(api_token_nonce, '') FROM hosts WHERE id = ?`, id).Scan(&token.Ciphertext, &token.Nonce); err != nil {
+		return core.EncryptedSecret{}, fmt.Errorf("get host %d api token: %w", id, err)
+	}
+	if token.Ciphertext == "" || token.Nonce == "" {
+		return core.EncryptedSecret{}, fmt.Errorf("host %d has no stored API token", id)
+	}
+	return token, nil
 }
 
 // Update mutates host display fields.

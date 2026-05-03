@@ -38,18 +38,26 @@ type Host struct {
 
 // HostCreate describes a new host inventory record.
 type HostCreate struct {
-	Name           string   `json:"name"`
-	Hostname       string   `json:"hostname"`
-	SSHPort        int      `json:"ssh_port"`
-	SSHUser        string   `json:"ssh_user"`
-	Type           HostType `json:"host_type"`
-	PackageManager string   `json:"package_manager"`
-	OSPretty       string   `json:"os_pretty"`
-	Arch           string   `json:"arch"`
-	IsProxmoxHost  bool     `json:"is_proxmox_host"`
-	IsSelf         bool     `json:"is_self"`
-	Enabled        bool     `json:"enabled"`
-	Notes          string   `json:"notes"`
+	Name               string   `json:"name"`
+	Hostname           string   `json:"hostname"`
+	SSHPort            int      `json:"ssh_port"`
+	SSHUser            string   `json:"ssh_user"`
+	Type               HostType `json:"host_type"`
+	PackageManager     string   `json:"package_manager"`
+	OSPretty           string   `json:"os_pretty"`
+	Arch               string   `json:"arch"`
+	IsProxmoxHost      bool     `json:"is_proxmox_host"`
+	IsSelf             bool     `json:"is_self"`
+	Enabled            bool     `json:"enabled"`
+	Notes              string   `json:"notes"`
+	APITokenCiphertext string   `json:"-"`
+	APITokenNonce      string   `json:"-"`
+}
+
+// EncryptedSecret is an encrypted per-host secret stored in SQLite.
+type EncryptedSecret struct {
+	Ciphertext string
+	Nonce      string
 }
 
 // HostUpdate describes mutable inventory fields.

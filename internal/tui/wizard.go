@@ -42,6 +42,8 @@ type standardWizard struct {
 	diagnosis    *core.PermissionDiagnosis
 	refusal      string
 	errorMessage string
+	apiResult    *core.APIHostVerifyResult
+	apiCheck     *core.APIHostVerifyResult
 	sessionID    string
 	events       []core.BootstrapEvent
 	summary      *core.BootstrapSummary
@@ -52,6 +54,7 @@ type standardWizard struct {
 type wizardMsg struct {
 	kind         string
 	detectResult core.StandardDetectResult
+	apiResult    core.APIHostVerifyResult
 	session      core.BootstrapSession
 	host         core.Host
 	events       <-chan stream.Event
@@ -93,6 +96,10 @@ func (m model) handleWizardKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleWizardInputKey(key)
 	case wizardStepDetected:
 		if key.String() == "enter" {
+			if m.wizard.isAPI() {
+				m.wizard.step = wizardStepBootstrapping
+				return m, checkAPIHostCmd(m.ctx, m.client, m.wizard)
+			}
 			m.wizard.step = wizardStepBootstrapping
 			m.wizard.events = nil
 			return m, startBootstrapCmd(m.ctx, m.client, m.wizard)
@@ -116,12 +123,13 @@ func (m model) handleWizardKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) handleWizardInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	focusCount := m.wizard.inputFocusCount()
 	switch key.String() {
 	case "tab", "down":
-		m.wizard.focus = (m.wizard.focus + 1) % 4
+		m.wizard.focus = (m.wizard.focus + 1) % focusCount
 		return m, nil
 	case "shift+tab", "up":
-		m.wizard.focus = (m.wizard.focus + 3) % 4
+		m.wizard.focus = (m.wizard.focus + focusCount - 1) % focusCount
 		return m, nil
 	case "left":
 		if m.wizard.focus == 0 && m.wizard.hostType > 0 {
@@ -137,10 +145,13 @@ func (m model) handleWizardInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.wizard.backspaceFocused()
 		return m, nil
 	case "enter":
-		if m.wizard.hostType != 0 {
-			m.wizard.step = wizardStepError
-			m.wizard.errorMessage = "TrueNAS and Home Assistant OS onboarding are implemented in Milestone 4. Choose Standard for this milestone."
-			return m, nil
+		if m.wizard.isAPI() {
+			if strings.TrimSpace(m.wizard.hostname) == "" || len(m.wizard.password) == 0 {
+				m.status = "URL and API token are required"
+				return m, nil
+			}
+			m.wizard.step = wizardStepDetecting
+			return m, verifyAPIHostCmd(m.ctx, m.client, m.wizard)
 		}
 		if strings.TrimSpace(m.wizard.hostname) == "" || strings.TrimSpace(m.wizard.sshUser) == "" || len(m.wizard.password) == 0 {
 			m.status = "Hostname, SSH user, and password are required"
@@ -156,6 +167,17 @@ func (m model) handleWizardInputKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) handleWizardDiagnoseKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.wizard.isAPI() {
+		switch key.String() {
+		case "r":
+			m.wizard.step = wizardStepDetecting
+			return m, verifyAPIHostCmd(m.ctx, m.client, m.wizard)
+		case "e":
+			m.wizard.step = wizardStepInput
+			return m, nil
+		}
+		return m, nil
+	}
 	switch key.String() {
 	case "tab", "down", "up", "shift+tab":
 		return m, nil
@@ -202,6 +224,9 @@ func (m model) handleWizardReviewKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "enter":
+		if m.wizard.isAPI() {
+			return m, commitAPIHostCmd(m.ctx, m.client, m.wizard)
+		}
 		return m, commitBootstrapCmd(m.ctx, m.client, m.wizard)
 	}
 	if len(key.Runes) > 0 {
@@ -239,6 +264,46 @@ func (m model) handleWizardMsg(msg wizardMsg) (model, tea.Cmd) {
 		}
 		m.wizard.step = wizardStepDetected
 		m.wizard.name = fallbackName(m.wizard.facts.Hostname, m.wizard.hostname)
+		return m, nil
+	case "api-verify":
+		if msg.err != nil {
+			m.wizard.step = wizardStepError
+			m.wizard.errorMessage = msg.err.Error()
+			return m, nil
+		}
+		m.wizard.apiResult = &msg.apiResult
+		if msg.apiResult.Refusal != "" {
+			m.wizard.zeroSecrets()
+			m.wizard.step = wizardStepError
+			m.wizard.errorMessage = msg.apiResult.Refusal
+			return m, nil
+		}
+		if msg.apiResult.Diagnosis != "" {
+			m.wizard.step = wizardStepDiagnose
+			return m, nil
+		}
+		m.wizard.step = wizardStepDetected
+		m.wizard.name = fallbackName(defaultAPIWizardName(m.wizard.hostType, msg.apiResult.Endpoint), msg.apiResult.Endpoint)
+		return m, nil
+	case "api-check":
+		if msg.err != nil {
+			m.wizard.step = wizardStepError
+			m.wizard.errorMessage = msg.err.Error()
+			return m, nil
+		}
+		m.wizard.apiCheck = &msg.apiResult
+		if msg.apiResult.Refusal != "" {
+			m.wizard.zeroSecrets()
+			m.wizard.step = wizardStepError
+			m.wizard.errorMessage = msg.apiResult.Refusal
+			return m, nil
+		}
+		if msg.apiResult.Diagnosis != "" {
+			m.wizard.step = wizardStepDiagnose
+			return m, nil
+		}
+		m.wizard.step = wizardStepReview
+		m.wizard.focus = 0
 		return m, nil
 	case "root-assist":
 		core.ZeroBytes(m.wizard.rootPassword)
@@ -320,15 +385,27 @@ func (m model) renderWizard(bodyHeight int) string {
 	case wizardStepInput:
 		content = m.renderWizardInput()
 	case wizardStepDetecting:
-		content = m.styles.Card.Width(66).Render(m.spinner.View() + " Connecting and detecting")
+		label := "Connecting and detecting"
+		if m.wizard.isAPI() {
+			label = "Verifying API"
+		}
+		content = m.styles.Card.Width(66).Render(m.spinner.View() + " " + label)
 	case wizardStepDetected:
 		content = m.renderWizardDetected()
 	case wizardStepDiagnose:
-		content = m.renderWizardDiagnose()
+		if m.wizard.isAPI() {
+			content = m.renderAPIWizardDiagnose()
+		} else {
+			content = m.renderWizardDiagnose()
+		}
 	case wizardStepPreinstall:
 		content = m.renderWizardPreinstall()
 	case wizardStepBootstrapping:
-		content = m.renderWizardBootstrap()
+		if m.wizard.isAPI() {
+			content = m.styles.Card.Width(72).Render(m.spinner.View() + " Calling update-check API")
+		} else {
+			content = m.renderWizardBootstrap()
+		}
 	case wizardStepReview:
 		content = m.renderWizardReview()
 	case wizardStepError:
@@ -356,16 +433,31 @@ func (m model) renderWizardInput() string {
 		builder.WriteString("  ")
 	}
 	builder.WriteString("\n\n")
-	builder.WriteString(m.inputLine("Hostname or IP", m.wizard.hostname, m.wizard.focus == 1, false))
-	builder.WriteByte('\n')
-	builder.WriteString(m.inputLine("SSH user", m.wizard.sshUser, m.wizard.focus == 2, false))
-	builder.WriteByte('\n')
-	builder.WriteString(m.inputLine("Password", strings.Repeat("*", len(m.wizard.password)), m.wizard.focus == 3, true))
+	if m.wizard.isAPI() {
+		endpoint := m.wizard.hostname
+		if endpoint == "" {
+			endpoint = "https://"
+		}
+		builder.WriteString(m.inputLine("URL", endpoint, m.wizard.focus == 1, false))
+		builder.WriteByte('\n')
+		builder.WriteString(m.inputLine("API token", strings.Repeat("*", len(m.wizard.password)), m.wizard.focus == 2, true))
+		builder.WriteByte('\n')
+		builder.WriteString(m.styles.MutedText.Render(apiTokenHint(m.wizard.hostType)))
+	} else {
+		builder.WriteString(m.inputLine("Hostname or IP", m.wizard.hostname, m.wizard.focus == 1, false))
+		builder.WriteByte('\n')
+		builder.WriteString(m.inputLine("SSH user", m.wizard.sshUser, m.wizard.focus == 2, false))
+		builder.WriteByte('\n')
+		builder.WriteString(m.inputLine("Password", strings.Repeat("*", len(m.wizard.password)), m.wizard.focus == 3, true))
+	}
 	builder.WriteString("\n\nEnter Go   Esc Cancel")
 	return m.styles.Card.Width(74).Render(builder.String())
 }
 
 func (m model) renderWizardDetected() string {
+	if m.wizard.isAPI() {
+		return m.renderAPIWizardDetected()
+	}
 	facts := m.wizard.facts
 	lines := []string{
 		theme.SymbolOK + " Connected to " + m.wizard.hostname + " as " + m.wizard.sshUser,
@@ -381,6 +473,35 @@ func (m model) renderWizardDetected() string {
 	}
 	lines = append(lines, "", "Enter to bootstrap   Esc cancel")
 	return m.styles.Card.Width(76).Render(m.styles.CardTitle.Render("Detection summary") + "\n\n" + strings.Join(lines, "\n"))
+}
+
+func (m model) renderAPIWizardDetected() string {
+	result := m.wizard.apiResult
+	if result == nil {
+		return m.styles.Card.Render("Preparing API verification")
+	}
+	lines := []string{
+		theme.SymbolOK + " Endpoint: " + result.Endpoint,
+		theme.SymbolOK + " Version: " + result.Version,
+	}
+	if len(result.Components) > 0 {
+		for _, component := range result.Components {
+			lines = append(lines, theme.SymbolOK+" "+component.Name+": "+component.Version)
+		}
+	}
+	lines = append(lines, "", "Enter to check updates   Esc cancel")
+	return m.styles.Card.Width(78).Render(m.styles.CardTitle.Render("API verification") + "\n\n" + strings.Join(lines, "\n"))
+}
+
+func (m model) renderAPIWizardDiagnose() string {
+	diagnosis := "API call failed"
+	if m.wizard.apiResult != nil && m.wizard.apiResult.Diagnosis != "" {
+		diagnosis = m.wizard.apiResult.Diagnosis
+	}
+	if m.wizard.apiCheck != nil && m.wizard.apiCheck.Diagnosis != "" {
+		diagnosis = m.wizard.apiCheck.Diagnosis
+	}
+	return m.styles.Card.Width(72).Render(m.styles.ErrorText.Render(theme.SymbolError+" "+diagnosis) + "\n\nr retry   e edit   Esc cancel")
 }
 
 func (m model) renderWizardDiagnose() string {
@@ -443,6 +564,9 @@ func (m model) renderWizardBootstrap() string {
 }
 
 func (m model) renderWizardReview() string {
+	if m.wizard.isAPI() {
+		return m.renderAPIWizardReview()
+	}
 	summary := m.wizard.summary
 	if summary == nil {
 		return m.styles.Card.Render("Preparing review")
@@ -477,6 +601,53 @@ func (m model) renderWizardReview() string {
 	return m.styles.Card.Width(78).Render(builder.String())
 }
 
+func (m model) renderAPIWizardReview() string {
+	result := m.wizard.apiCheck
+	if result == nil {
+		result = m.wizard.apiResult
+	}
+	if result == nil {
+		return m.styles.Card.Render("Preparing review")
+	}
+	var builder strings.Builder
+	builder.WriteString(m.styles.CardTitle.Render("Review and save"))
+	builder.WriteString("\n\n")
+	builder.WriteString(m.inputLine("Host", m.wizard.name, m.wizard.focus == 0, false))
+	builder.WriteByte('\n')
+	builder.WriteString("Type: ")
+	builder.WriteString(apiWizardLabel(m.wizard.hostType))
+	builder.WriteString("\nEndpoint: ")
+	builder.WriteString(result.Endpoint)
+	builder.WriteString("\nVersion: ")
+	builder.WriteString(result.Version)
+	builder.WriteString("\nLast check: ")
+	builder.WriteString(result.LastCheckStatus)
+	for _, component := range result.Components {
+		builder.WriteString("\n")
+		builder.WriteString(component.Name)
+		builder.WriteString(": ")
+		builder.WriteString(component.Version)
+		if component.LatestVersion != "" && component.LatestVersion != component.Version {
+			builder.WriteString(" -> ")
+			builder.WriteString(component.LatestVersion)
+		}
+	}
+	builder.WriteByte('\n')
+	builder.WriteString(m.inputLine("Notes", m.wizard.notes, m.wizard.focus == 1, false))
+	builder.WriteString("\nEnabled: ")
+	check := "[ ]"
+	if m.wizard.enabled {
+		check = "[x]"
+	}
+	if m.wizard.focus == 2 {
+		builder.WriteString(m.styles.ActiveTab.Render(check))
+	} else {
+		builder.WriteString(check)
+	}
+	builder.WriteString("\n\nEnter Save   Space toggle enabled   Esc cancel")
+	return m.styles.Card.Width(82).Render(builder.String())
+}
+
 func (m model) inputLine(label string, value string, focused bool, secret bool) string {
 	field := fmt.Sprintf("%-15s [%s]", label+":", value)
 	if secret && value == "" {
@@ -493,6 +664,10 @@ func (w *standardWizard) appendFocused(value string) {
 	case 1:
 		w.hostname += value
 	case 2:
+		if w.isAPI() {
+			w.password = append(w.password, []byte(value)...)
+			return
+		}
 		w.sshUser += value
 	case 3:
 		w.password = append(w.password, []byte(value)...)
@@ -506,6 +681,13 @@ func (w *standardWizard) backspaceFocused() {
 			w.hostname = w.hostname[:len(w.hostname)-1]
 		}
 	case 2:
+		if w.isAPI() {
+			if len(w.password) > 0 {
+				w.password[len(w.password)-1] = 0
+				w.password = w.password[:len(w.password)-1]
+			}
+			return
+		}
 		if len(w.sshUser) > 0 {
 			w.sshUser = w.sshUser[:len(w.sshUser)-1]
 		}
@@ -515,6 +697,27 @@ func (w *standardWizard) backspaceFocused() {
 			w.password = w.password[:len(w.password)-1]
 		}
 	}
+}
+
+func (w standardWizard) isAPI() bool {
+	return w.hostType == 1 || w.hostType == 2
+}
+
+func (w standardWizard) inputFocusCount() int {
+	if w.isAPI() {
+		return 3
+	}
+	return 4
+}
+
+func (w standardWizard) selectedAPIHostType() core.HostType {
+	if w.hostType == 1 {
+		return core.HostTypeTrueNAS
+	}
+	if w.hostType == 2 {
+		return core.HostTypeHAOS
+	}
+	return core.HostTypeStandard
 }
 
 func (w *standardWizard) zeroSecrets() {
@@ -561,6 +764,28 @@ func startBootstrapCmd(ctx context.Context, client *ipc.Client, wizard standardW
 	}
 }
 
+func verifyAPIHostCmd(ctx context.Context, client *ipc.Client, wizard standardWizard) tea.Cmd {
+	input := core.APIHostVerifyInput{Type: wizard.selectedAPIHostType(), Endpoint: strings.TrimSpace(wizard.hostname), APIToken: append([]byte{}, wizard.password...)}
+	return func() tea.Msg {
+		defer core.ZeroBytes(input.APIToken)
+		requestCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+		defer cancel()
+		result, err := client.VerifyAPIHost(requestCtx, input)
+		return wizardMsg{kind: "api-verify", apiResult: result, err: err}
+	}
+}
+
+func checkAPIHostCmd(ctx context.Context, client *ipc.Client, wizard standardWizard) tea.Cmd {
+	input := core.APIHostVerifyInput{Type: wizard.selectedAPIHostType(), Endpoint: strings.TrimSpace(wizard.hostname), APIToken: append([]byte{}, wizard.password...)}
+	return func() tea.Msg {
+		defer core.ZeroBytes(input.APIToken)
+		requestCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		defer cancel()
+		result, err := client.CheckAPIHost(requestCtx, input)
+		return wizardMsg{kind: "api-check", apiResult: result, err: err}
+	}
+}
+
 func nextBootstrapEventCmd(events <-chan stream.Event, errors <-chan error) tea.Cmd {
 	return func() tea.Msg {
 		select {
@@ -588,6 +813,17 @@ func commitBootstrapCmd(ctx context.Context, client *ipc.Client, wizard standard
 	}
 }
 
+func commitAPIHostCmd(ctx context.Context, client *ipc.Client, wizard standardWizard) tea.Cmd {
+	input := core.APIHostCommitInput{Type: wizard.selectedAPIHostType(), Endpoint: strings.TrimSpace(wizard.hostname), APIToken: append([]byte{}, wizard.password...), Name: strings.TrimSpace(wizard.name), Notes: wizard.notes, Enabled: wizard.enabled}
+	return func() tea.Msg {
+		defer core.ZeroBytes(input.APIToken)
+		requestCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+		defer cancel()
+		host, err := client.CommitAPIHost(requestCtx, input)
+		return wizardMsg{kind: "commit", host: host, err: err}
+	}
+}
+
 func cancelBootstrapCmd(ctx context.Context, client *ipc.Client, sessionID string) tea.Cmd {
 	return func() tea.Msg {
 		requestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -602,4 +838,35 @@ func fallbackName(primary string, fallback string) string {
 		return strings.TrimSpace(primary)
 	}
 	return strings.TrimSpace(fallback)
+}
+
+func apiWizardLabel(hostType int) string {
+	if hostType == 1 {
+		return "TrueNAS SCALE"
+	}
+	if hostType == 2 {
+		return "Home Assistant OS"
+	}
+	return "Standard"
+}
+
+func apiTokenHint(hostType int) string {
+	if hostType == 1 {
+		return "TrueNAS SCALE API key"
+	}
+	if hostType == 2 {
+		return "Home Assistant Long-Lived Access Token for /api/hassio"
+	}
+	return ""
+}
+
+func defaultAPIWizardName(hostType int, endpoint string) string {
+	trimmed := strings.Trim(strings.TrimPrefix(strings.TrimPrefix(endpoint, "https://"), "http://"), "/")
+	if hostType == 1 {
+		return "truenas-" + trimmed
+	}
+	if hostType == 2 {
+		return "haos-" + trimmed
+	}
+	return trimmed
 }

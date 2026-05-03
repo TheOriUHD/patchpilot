@@ -13,6 +13,7 @@ import (
 	"github.com/TheOriUHD/patchpilot/internal/ipc"
 	"github.com/TheOriUHD/patchpilot/internal/logging"
 	"github.com/TheOriUHD/patchpilot/internal/scheduler"
+	"github.com/TheOriUHD/patchpilot/internal/secret"
 	remotessh "github.com/TheOriUHD/patchpilot/internal/ssh"
 	"github.com/TheOriUHD/patchpilot/internal/store"
 	"github.com/TheOriUHD/patchpilot/internal/stream"
@@ -66,10 +67,14 @@ func Run(ctx context.Context) error {
 	scheduleRepo := store.NewScheduleRepository(db)
 	auditRepo := store.NewAuditRepository(db)
 	keyStore := remotessh.NewKeyStore(cfg.Paths.DataDir)
+	secretManager := secret.NewManager(cfg.Paths.SecretKeyPath)
+	if _, err := secretManager.Ensure(ctx); err != nil {
+		return fmt.Errorf("ensure secret key: %w", err)
+	}
 	streamHub := stream.NewHub()
 	logTailer := stream.NewLogTailer(350 * time.Millisecond)
-	hostService := core.NewHostService(hostRepo, auditRepo, keyStore, streamHub, logger)
-	orchestrator := core.NewOrchestrator(hostRepo, runRepo, scheduleRepo, auditRepo, keyStore, streamHub, logger)
+	hostService := core.NewHostService(hostRepo, auditRepo, keyStore, streamHub, logger, secretManager)
+	orchestrator := core.NewOrchestrator(hostRepo, runRepo, scheduleRepo, auditRepo, keyStore, streamHub, logger, secretManager)
 	orchestrator.Start(ctx)
 	scheduleEngine := scheduler.NewEngine(scheduleRepo, orchestrator, logger)
 	if err := scheduleEngine.Start(ctx); err != nil {

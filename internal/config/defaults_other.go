@@ -16,10 +16,11 @@ func defaultPaths() (Paths, error) {
 
 	base := filepath.Join(home, ".patchpilot")
 	return Paths{
-		ConfigPath:   filepath.Join(base, "config.yaml"),
-		DataDir:      base,
-		DatabasePath: filepath.Join(base, "patchpilot.db"),
-		SocketPath:   filepath.Join(base, "patchpilot.sock"),
-		LogPath:      filepath.Join(base, "daemon.log"),
+		ConfigPath:    filepath.Join(base, "config.yaml"),
+		DataDir:       base,
+		DatabasePath:  filepath.Join(base, "patchpilot.db"),
+		SocketPath:    filepath.Join(base, "patchpilot.sock"),
+		LogPath:       filepath.Join(base, "daemon.log"),
+		SecretKeyPath: filepath.Join(base, "secret.key"),
 	}, nil
 }

@@ -109,6 +109,7 @@ type HostService struct {
 	Hosts   HostRepository
 	Audit   AuditRepository
 	Keys    *remotessh.KeyStore
+	Secrets SecretCipher
 	Streams *stream.Hub
 	Logger  *slog.Logger
 
@@ -117,8 +118,12 @@ type HostService struct {
 }
 
 // NewHostService creates the host workflow service.
-func NewHostService(hosts HostRepository, audit AuditRepository, keys *remotessh.KeyStore, streams *stream.Hub, logger *slog.Logger) *HostService {
-	return &HostService{Hosts: hosts, Audit: audit, Keys: keys, Streams: streams, Logger: logger, sessions: make(map[string]bootstrapSessionState)}
+func NewHostService(hosts HostRepository, audit AuditRepository, keys *remotessh.KeyStore, streams *stream.Hub, logger *slog.Logger, secrets ...SecretCipher) *HostService {
+	var cipher SecretCipher
+	if len(secrets) > 0 {
+		cipher = secrets[0]
+	}
+	return &HostService{Hosts: hosts, Audit: audit, Keys: keys, Secrets: cipher, Streams: streams, Logger: logger, sessions: make(map[string]bootstrapSessionState)}
 }
 
 // DetectStandard probes a Standard host over SSH and diagnoses bootstrap readiness.
@@ -235,6 +240,12 @@ func (s *HostService) DryRunHost(ctx context.Context, hostID int64) (pkgmgr.DryR
 	host, err := s.Hosts.Get(ctx, hostID)
 	if err != nil {
 		return pkgmgr.DryRunResult{}, err
+	}
+	if host.Type == HostTypeTrueNAS || pkgmgr.PackageManager(host.PackageManager) == pkgmgr.ManagerTrueNASAPI {
+		return s.dryRunTrueNAS(ctx, host)
+	}
+	if host.Type == HostTypeHAOS || pkgmgr.PackageManager(host.PackageManager) == pkgmgr.ManagerHAOSAPI {
+		return s.dryRunHAOS(ctx, host)
 	}
 	return s.dryRunExistingHost(ctx, host)
 }
