@@ -26,6 +26,7 @@ type Schedule struct {
 	DayOfWeek      int        `json:"day_of_week"`
 	DayOfMonth     int        `json:"day_of_month"`
 	Enabled        bool       `json:"enabled"`
+	MaxConcurrent  int        `json:"max_concurrent"`
 	HostIDs        []int64    `json:"host_ids"`
 	HostCount      int        `json:"host_count"`
 	LastRunAt      *time.Time `json:"last_run_at,omitempty"`
@@ -38,12 +39,13 @@ type Schedule struct {
 
 // ScheduleInput describes fields used to create or update a schedule.
 type ScheduleInput struct {
-	Name       string    `json:"name"`
-	Frequency  Frequency `json:"frequency"`
-	Minute     int       `json:"minute"`
-	Hour       int       `json:"hour"`
-	DayOfWeek  int       `json:"day_of_week"`
-	DayOfMonth int       `json:"day_of_month"`
-	Enabled    bool      `json:"enabled"`
-	HostIDs    []int64   `json:"host_ids"`
+	Name          string    `json:"name"`
+	Frequency     Frequency `json:"frequency"`
+	Minute        int       `json:"minute"`
+	Hour          int       `json:"hour"`
+	DayOfWeek     int       `json:"day_of_week"`
+	DayOfMonth    int       `json:"day_of_month"`
+	Enabled       bool      `json:"enabled"`
+	MaxConcurrent int       `json:"max_concurrent"`
+	HostIDs       []int64   `json:"host_ids"`
 }

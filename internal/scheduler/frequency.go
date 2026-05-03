@@ -9,7 +9,7 @@ import (
 
 // InputFromSchedule converts a stored schedule to editable schedule input.
 func InputFromSchedule(schedule core.Schedule) core.ScheduleInput {
-	return core.ScheduleInput{Name: schedule.Name, Frequency: schedule.Frequency, Minute: schedule.Minute, Hour: schedule.Hour, DayOfWeek: schedule.DayOfWeek, DayOfMonth: schedule.DayOfMonth, Enabled: schedule.Enabled, HostIDs: append([]int64(nil), schedule.HostIDs...)}
+	return core.ScheduleInput{Name: schedule.Name, Frequency: schedule.Frequency, Minute: schedule.Minute, Hour: schedule.Hour, DayOfWeek: schedule.DayOfWeek, DayOfMonth: schedule.DayOfMonth, Enabled: schedule.Enabled, MaxConcurrent: schedule.MaxConcurrent, HostIDs: append([]int64(nil), schedule.HostIDs...)}
 }
 
 // Validate checks schedule timing fields.

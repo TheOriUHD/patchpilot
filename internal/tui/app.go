@@ -89,17 +89,31 @@ type model struct {
 	scheduleScreen   scheduleScreen
 	scheduleEditor   scheduleEditor
 
-	runs           []core.Run
-	runLoading     bool
-	runError       string
-	runSelected    int
-	liveRun        *core.RunDetail
-	liveLogLines   []liveLogEntry
-	liveHostIndex  int
-	liveCancel     bool
-	runEvents      <-chan stream.Event
-	runEventErrors <-chan error
-	runStreamStop  context.CancelFunc
+	runs              []core.Run
+	runLoading        bool
+	runError          string
+	runSelected       int
+	liveRun           *core.RunDetail
+	liveLogLines      []liveLogEntry
+	liveHostIndex     int
+	liveCancel        bool
+	runEvents         <-chan stream.Event
+	runEventErrors    <-chan error
+	runStreamStop     context.CancelFunc
+	historicalRun     bool
+	runOffset         int
+	runDateRange      string
+	runStatusFilters  map[core.RunStatus]bool
+	runTriggerFilters map[core.RunTrigger]bool
+
+	settingsLoading         bool
+	settingsError           string
+	settingsSnapshot        *core.SettingsSnapshot
+	settingsConfirm         string
+	settingsExportPath      string
+	settingsImportPath      string
+	settingsPathFocus       string
+	settingsImportConflicts []string
 }
 
 type healthLoadedMsg struct {
@@ -159,7 +173,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.hostLoading = true
 		m.scheduleLoading = true
 		m.runLoading = true
-		return m, tea.Batch(loadHostsCmd(m.ctx, m.client), loadSchedulesCmd(m.ctx, m.client), loadRunsCmd(m.ctx, m.client))
+		m.settingsLoading = true
+		return m, tea.Batch(loadHostsCmd(m.ctx, m.client), loadSchedulesCmd(m.ctx, m.client), loadRunsCmd(m.ctx, m.client), loadSettingsCmd(m.ctx, m.client))
 	case daemonStartedMsg:
 		m.starting = false
 		if typed.err != nil {
@@ -237,6 +252,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.liveRun = &typed.detail
 		m.liveLogLines = nil
 		m.liveHostIndex = 0
+		m.historicalRun = false
 		m.status = fmt.Sprintf("Run %d %s", typed.detail.Run.ID, typed.detail.Run.Status)
 		return m, tea.Batch(m.startRunStream(typed.detail.Run.ID), loadRunsCmd(m.ctx, m.client))
 	case runDetailLoadedMsg:
@@ -246,8 +262,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.liveRun = &typed.detail
 		m.liveLogLines = nil
+		for _, entry := range typed.logs {
+			m.liveLogLines = append(m.liveLogLines, liveLogEntry{hostRunID: entry.HostRunID, hostName: entry.HostName, line: entry.Line})
+		}
 		m.liveHostIndex = 0
-		return m, m.startRunStream(typed.detail.Run.ID)
+		m.historicalRun = true
+		return m, nil
 	case runStreamMsg:
 		return m, m.handleRunStreamEvent(typed.event)
 	case runStreamErrorMsg:
@@ -270,6 +290,34 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.status = typed.result.Summary
 		return m, nil
+	case settingsLoadedMsg:
+		m.settingsLoading = false
+		if typed.err != nil {
+			m.settingsError = typed.err.Error()
+			m.status = "Could not load settings"
+			return m, nil
+		}
+		m.settingsError = ""
+		m.settingsSnapshot = &typed.snapshot
+		return m, nil
+	case settingsMutationMsg:
+		m.settingsConfirm = ""
+		m.settingsLoading = false
+		if typed.err != nil {
+			m.status = typed.err.Error()
+			return m, nil
+		}
+		if typed.snapshot != nil {
+			m.settingsSnapshot = typed.snapshot
+		}
+		if len(typed.conflicts) > 0 {
+			m.settingsImportConflicts = typed.conflicts
+			m.status = "Import conflicts need a choice"
+			return m, nil
+		}
+		m.settingsImportConflicts = nil
+		m.status = typed.message
+		return m, loadSettingsCmd(m.ctx, m.client)
 	case wizardMsg:
 		var cmd tea.Cmd
 		m, cmd = m.handleWizardMsg(typed)
@@ -318,6 +366,9 @@ func (m model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.daemonState == components.DaemonUp && m.activeTab == 2 {
 		return m.handleRunsKey(key)
 	}
+	if m.daemonState == components.DaemonUp && m.activeTab == 3 {
+		return m.handleSettingsKey(key)
+	}
 
 	switch key.String() {
 	case "q", "ctrl+c":
@@ -363,7 +414,7 @@ func (m model) renderActiveTab(bodyHeight int) string {
 	case 2:
 		return m.renderRunsView(bodyHeight)
 	case 3:
-		return m.centerCard(bodyHeight, m.styles.Card.Render(m.styles.CardTitle.Render("Settings")+"\n\nDaemon socket: "+m.cfg.Paths.SocketPath))
+		return m.renderSettingsView(bodyHeight)
 	default:
 		return ""
 	}
@@ -409,6 +460,9 @@ func (m model) keybinds() []string {
 	}
 	if m.daemonState == components.DaemonUp && m.activeTab == 2 {
 		return m.runKeybinds()
+	}
+	if m.daemonState == components.DaemonUp && m.activeTab == 3 {
+		return m.settingsKeybinds()
 	}
 	keys := []string{"Tab switch", "1-4 tabs", "q quit"}
 	if m.daemonState == components.DaemonDown {

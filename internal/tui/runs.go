@@ -27,6 +27,7 @@ type runStartedMsg struct {
 
 type runDetailLoadedMsg struct {
 	detail core.RunDetail
+	logs   []core.RunLogEntry
 	err    error
 }
 
@@ -86,6 +87,9 @@ func (m model) handleRunsKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "K":
+			if m.historicalRun {
+				return m, nil
+			}
 			m.liveCancel = true
 			m.status = "Confirm run cancellation"
 			return m, nil
@@ -109,7 +113,40 @@ func (m model) handleRunsKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "r":
 		m.runLoading = true
-		return m, loadRunsCmd(m.ctx, m.client)
+		return m, loadRunsPageCmd(m.ctx, m.client, m.runListQuery())
+	case "o":
+		m.runOffset += 100
+		m.runLoading = true
+		return m, loadRunsPageCmd(m.ctx, m.client, m.runListQuery())
+	case "f":
+		m.runDateRange = nextRunDateRange(m.runDateRange)
+		m.runOffset = 0
+		m.runLoading = true
+		return m, loadRunsPageCmd(m.ctx, m.client, m.runListQuery())
+	case "S":
+		m.toggleRunStatusFilter(core.RunStatusSuccess)
+		m.runLoading = true
+		return m, loadRunsPageCmd(m.ctx, m.client, m.runListQuery())
+	case "F":
+		m.toggleRunStatusFilter(core.RunStatusFailed)
+		m.runLoading = true
+		return m, loadRunsPageCmd(m.ctx, m.client, m.runListQuery())
+	case "P":
+		m.toggleRunStatusFilter(core.RunStatusRunning)
+		m.runLoading = true
+		return m, loadRunsPageCmd(m.ctx, m.client, m.runListQuery())
+	case "M":
+		m.toggleRunTriggerFilter(core.RunTriggerManual)
+		m.runLoading = true
+		return m, loadRunsPageCmd(m.ctx, m.client, m.runListQuery())
+	case "A":
+		m.toggleRunTriggerFilter(core.RunTriggerScheduled)
+		m.runLoading = true
+		return m, loadRunsPageCmd(m.ctx, m.client, m.runListQuery())
+	case "C":
+		m.toggleRunTriggerFilter(core.RunTriggerCLI)
+		m.runLoading = true
+		return m, loadRunsPageCmd(m.ctx, m.client, m.runListQuery())
 	case "enter":
 		if run, ok := m.selectedRun(); ok {
 			return m, loadRunDetailCmd(m.ctx, m.client, run.ID)
@@ -144,8 +181,10 @@ func (m model) renderRunsView(bodyHeight int) string {
 	}
 	var builder strings.Builder
 	builder.WriteString(m.styles.CardTitle.Render("Runs"))
+	builder.WriteString("  ")
+	builder.WriteString(m.styles.MutedText.Render(m.runFilterSummary()))
 	builder.WriteString("\n\n")
-	builder.WriteString(fmt.Sprintf("%-2s %-6s %-12s %-15s %-18s %s\n", "", "ID", "Trigger", "Status", "Started", "Summary"))
+	builder.WriteString(fmt.Sprintf("%-2s %-6s %-18s %-11s %-13s %-7s %-8s %s\n", "", "ID", "Started", "Trigger", "Status", "Hosts", "Dur", "Schedule"))
 	builder.WriteString(m.styles.MutedText.Render(strings.Repeat("─", 94)))
 	builder.WriteByte('\n')
 	for index, run := range m.runs {
@@ -153,7 +192,7 @@ func (m model) renderRunsView(bodyHeight int) string {
 		if index == m.runSelected {
 			cursor = theme.SymbolPointer
 		}
-		line := fmt.Sprintf("%-2s %-6d %-12s %-15s %-18s %s", cursor, run.ID, run.Trigger, run.Status, run.StartedAt.Format("Jan 02 15:04"), truncate(run.Summary, 36))
+		line := fmt.Sprintf("%-2s %-6d %-18s %-11s %-13s %-7d %-8s %s", cursor, run.ID, run.StartedAt.Format("Jan 02 15:04"), run.Trigger, run.Status, run.HostCount, formatDuration(run.DurationSeconds), truncate(run.ScheduleName, 24))
 		if index == m.runSelected {
 			builder.WriteString(m.styles.ActiveTab.Render(line))
 		} else {
@@ -167,7 +206,11 @@ func (m model) renderRunsView(bodyHeight int) string {
 func (m model) renderLiveRun(bodyHeight int) string {
 	detail := *m.liveRun
 	var builder strings.Builder
-	builder.WriteString(m.styles.CardTitle.Render(fmt.Sprintf("Run %d", detail.Run.ID)))
+	title := fmt.Sprintf("Run %d", detail.Run.ID)
+	if m.historicalRun {
+		title += " history"
+	}
+	builder.WriteString(m.styles.CardTitle.Render(title))
 	builder.WriteString("  ")
 	builder.WriteString(string(detail.Run.Status))
 	if m.liveCancel {
@@ -235,9 +278,12 @@ func (m model) runKeybinds() []string {
 		return []string{"y cancel", "n keep running"}
 	}
 	if m.liveRun != nil {
+		if m.historicalRun {
+			return []string{"Tab host log", "q back"}
+		}
 		return []string{"Tab host log", "K cancel", "q back"}
 	}
-	return []string{"↑/↓ navigate", "Enter open", "r refresh", "q quit"}
+	return []string{"↑/↓ navigate", "Enter open", "f range", "S/F/P status", "M/A/C trigger", "o older"}
 }
 
 func (m model) selectedRun() (core.Run, bool) {
@@ -304,10 +350,14 @@ func (m *model) applyRunEvent(event core.RunEvent) {
 }
 
 func loadRunsCmd(ctx context.Context, client *ipc.Client) tea.Cmd {
+	return loadRunsPageCmd(ctx, client, core.RunListQuery{Limit: 100})
+}
+
+func loadRunsPageCmd(ctx context.Context, client *ipc.Client, query core.RunListQuery) tea.Cmd {
 	return func() tea.Msg {
 		requestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
-		runs, err := client.ListRuns(requestCtx)
+		runs, err := client.ListRunsPage(requestCtx, query)
 		return runsLoadedMsg{runs: runs, err: err}
 	}
 }
@@ -317,8 +367,106 @@ func loadRunDetailCmd(ctx context.Context, client *ipc.Client, id int64) tea.Cmd
 		requestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 		detail, err := client.GetRun(requestCtx, id)
-		return runDetailLoadedMsg{detail: detail, err: err}
+		if err != nil {
+			return runDetailLoadedMsg{detail: detail, err: err}
+		}
+		logs, err := client.GetRunLogs(requestCtx, id)
+		return runDetailLoadedMsg{detail: detail, logs: logs.Entries, err: err}
 	}
+}
+
+func (m model) runListQuery() core.RunListQuery {
+	query := core.RunListQuery{Limit: 100, Offset: m.runOffset}
+	for status, enabled := range m.runStatusFilters {
+		if enabled {
+			query.Statuses = append(query.Statuses, status)
+		}
+	}
+	for trigger, enabled := range m.runTriggerFilters {
+		if enabled {
+			query.Triggers = append(query.Triggers, trigger)
+		}
+	}
+	now := time.Now().UTC()
+	switch m.runDateRange {
+	case "24h":
+		since := now.Add(-24 * time.Hour)
+		query.Since = &since
+	case "7d":
+		since := now.Add(-7 * 24 * time.Hour)
+		query.Since = &since
+	case "30d":
+		since := now.Add(-30 * 24 * time.Hour)
+		query.Since = &since
+	}
+	return query
+}
+
+func (m *model) toggleRunStatusFilter(status core.RunStatus) {
+	if m.runStatusFilters == nil {
+		m.runStatusFilters = map[core.RunStatus]bool{}
+	}
+	m.runStatusFilters[status] = !m.runStatusFilters[status]
+	m.runOffset = 0
+}
+
+func (m *model) toggleRunTriggerFilter(trigger core.RunTrigger) {
+	if m.runTriggerFilters == nil {
+		m.runTriggerFilters = map[core.RunTrigger]bool{}
+	}
+	m.runTriggerFilters[trigger] = !m.runTriggerFilters[trigger]
+	m.runOffset = 0
+}
+
+func (m model) runFilterSummary() string {
+	rangeLabel := m.runDateRange
+	if rangeLabel == "" {
+		rangeLabel = "all"
+	}
+	parts := []string{"range " + rangeLabel, fmt.Sprintf("offset %d", m.runOffset)}
+	if len(m.runStatusFilters) > 0 {
+		statuses := []string{}
+		for status, enabled := range m.runStatusFilters {
+			if enabled {
+				statuses = append(statuses, string(status))
+			}
+		}
+		if len(statuses) > 0 {
+			parts = append(parts, "status "+strings.Join(statuses, ","))
+		}
+	}
+	if len(m.runTriggerFilters) > 0 {
+		triggers := []string{}
+		for trigger, enabled := range m.runTriggerFilters {
+			if enabled {
+				triggers = append(triggers, string(trigger))
+			}
+		}
+		if len(triggers) > 0 {
+			parts = append(parts, "trigger "+strings.Join(triggers, ","))
+		}
+	}
+	return strings.Join(parts, "  ")
+}
+
+func nextRunDateRange(current string) string {
+	switch current {
+	case "":
+		return "24h"
+	case "24h":
+		return "7d"
+	case "7d":
+		return "30d"
+	default:
+		return ""
+	}
+}
+
+func formatDuration(seconds int64) string {
+	if seconds <= 0 {
+		return "-"
+	}
+	return (time.Duration(seconds) * time.Second).String()
 }
 
 func waitRunEventCmd(events <-chan stream.Event, errors <-chan error) tea.Cmd {

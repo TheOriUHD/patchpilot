@@ -14,6 +14,7 @@ import (
 
 	"github.com/TheOriUHD/patchpilot/internal/haos"
 	"github.com/TheOriUHD/patchpilot/internal/pkgmgr"
+	"github.com/TheOriUHD/patchpilot/internal/selfupdate"
 	remotessh "github.com/TheOriUHD/patchpilot/internal/ssh"
 	"github.com/TheOriUHD/patchpilot/internal/stream"
 	"github.com/TheOriUHD/patchpilot/internal/truenas"
@@ -36,6 +37,16 @@ type OrchestratorRunStore interface {
 	CancelRun(ctx context.Context, id int64, summary string) error
 }
 
+// OrchestratorRunPageStore optionally provides paginated run listings.
+type OrchestratorRunPageStore interface {
+	ListPage(ctx context.Context, query RunListQuery) ([]Run, error)
+}
+
+// OrchestratorRunLogStore optionally provides historical run logs.
+type OrchestratorRunLogStore interface {
+	Logs(ctx context.Context, id int64, maxLines int) (RunLogResponse, error)
+}
+
 // OrchestratorScheduleStore is the schedule persistence interface required by the orchestrator.
 type OrchestratorScheduleStore interface {
 	List(ctx context.Context) ([]Schedule, error)
@@ -48,20 +59,42 @@ type OrchestratorScheduleStore interface {
 	MarkSkipped(ctx context.Context, id int64, skippedAt time.Time, reason string, nextRunAt *time.Time) error
 }
 
+// SettingsStore provides runtime settings used by the orchestrator.
+type SettingsStore interface {
+	ConcurrencyEnabled(ctx context.Context) (bool, error)
+}
+
+// SelfUpdateScheduler schedules delayed self-updates.
+type SelfUpdateScheduler interface {
+	Schedule(ctx context.Context, runID int64) (string, string, error)
+}
+
 // Orchestrator coordinates schedule/manual/CLI update runs.
 type Orchestrator struct {
-	Hosts     HostRepository
-	Runs      OrchestratorRunStore
-	Schedules OrchestratorScheduleStore
-	Audit     AuditRepository
-	Keys      *remotessh.KeyStore
-	Secrets   SecretCipher
-	Streams   *stream.Hub
-	Logger    *slog.Logger
+	Hosts       HostRepository
+	Runs        OrchestratorRunStore
+	Schedules   OrchestratorScheduleStore
+	Audit       AuditRepository
+	Keys        *remotessh.KeyStore
+	Secrets     SecretCipher
+	Settings    SettingsStore
+	SelfUpdater SelfUpdateScheduler
+	Streams     *stream.Hub
+	Logger      *slog.Logger
 
 	mu           sync.Mutex
 	activeRunID  int64
 	activeCancel context.CancelFunc
+}
+
+// SetSettingsStore attaches runtime settings after construction.
+func (o *Orchestrator) SetSettingsStore(settings SettingsStore) {
+	o.Settings = settings
+}
+
+// SetSelfUpdater attaches the self-update scheduler after construction.
+func (o *Orchestrator) SetSelfUpdater(updater SelfUpdateScheduler) {
+	o.SelfUpdater = updater
 }
 
 // NewOrchestrator creates a run orchestrator.
@@ -84,8 +117,25 @@ func RunStreamID(runID int64) string {
 }
 
 // ListRuns returns recent runs.
+
 func (o *Orchestrator) ListRuns(ctx context.Context) ([]Run, error) {
+	return o.ListRunsPage(ctx, RunListQuery{Limit: 100})
+}
+
+// ListRunsPage returns paginated global run history.
+func (o *Orchestrator) ListRunsPage(ctx context.Context, query RunListQuery) ([]Run, error) {
+	if store, ok := o.Runs.(OrchestratorRunPageStore); ok {
+		return store.ListPage(ctx, query)
+	}
 	return o.Runs.List(ctx)
+}
+
+// RunLogs returns persisted logs for a historical run.
+func (o *Orchestrator) RunLogs(ctx context.Context, id int64, maxLines int) (RunLogResponse, error) {
+	if store, ok := o.Runs.(OrchestratorRunLogStore); ok {
+		return store.Logs(ctx, id, maxLines)
+	}
+	return RunLogResponse{}, fmt.Errorf("run logs are not available")
 }
 
 // RecordAudit writes an audit event through the orchestrator's audit sink.
@@ -253,45 +303,12 @@ func (o *Orchestrator) executeRun(ctx context.Context, detail RunDetail) {
 	}
 	o.publish(runID, RunEvent{RunID: runID, RunStatus: RunStatusRunning, Message: "run started", OccurredAt: time.Now().UTC()})
 
-	successCount := 0
-	failureCount := 0
-	skippedCount := 0
-	for _, hostRun := range detail.HostRuns {
-		if err := ctx.Err(); err != nil {
-			_ = o.Runs.CancelRun(context.Background(), runID, "cancelled")
-			o.finishActive(runID)
-			o.publish(runID, RunEvent{RunID: runID, RunStatus: RunStatusCancelled, Message: "run cancelled", OccurredAt: time.Now().UTC()})
-			return
-		}
-		host, err := o.Hosts.Get(ctx, hostRun.HostID)
-		if err != nil {
-			failureCount++
-			_ = o.Runs.FinishHostRun(context.Background(), hostRun.ID, HostRunStatusFailed, -1, 0, false, err.Error())
-			continue
-		}
-		if err := o.Runs.StartHostRun(context.Background(), hostRun.ID); err != nil && o.Logger != nil {
-			o.Logger.Error("start host run", "error", err, "host_run_id", hostRun.ID)
-		}
-		o.publish(runID, RunEvent{RunID: runID, HostRunID: hostRun.ID, HostID: host.ID, HostName: host.Name, HostStatus: HostRunStatusRunning, Message: "host update started", OccurredAt: time.Now().UTC()})
-		outcome := o.executeHostRun(ctx, host, hostRun)
-		if errors.Is(ctx.Err(), context.Canceled) {
-			_ = o.Runs.CancelRun(context.Background(), runID, "cancelled")
-			o.finishActive(runID)
-			o.publish(runID, RunEvent{RunID: runID, RunStatus: RunStatusCancelled, Message: "run cancelled", OccurredAt: time.Now().UTC()})
-			return
-		}
-		if err := o.Runs.FinishHostRun(context.Background(), hostRun.ID, outcome.Status, outcome.ExitCode, outcome.Packages, outcome.RebootRequired, outcome.Summary); err != nil && o.Logger != nil {
-			o.Logger.Error("finish host run", "error", err, "host_run_id", hostRun.ID)
-		}
-		switch outcome.Status {
-		case HostRunStatusSuccess:
-			successCount++
-		case HostRunStatusSkipped:
-			skippedCount++
-		default:
-			failureCount++
-		}
-		o.publish(runID, RunEvent{RunID: runID, HostRunID: hostRun.ID, HostID: host.ID, HostName: host.Name, HostStatus: outcome.Status, Message: outcome.Summary, Reboot: outcome.RebootRequired, OccurredAt: time.Now().UTC()})
+	successCount, failureCount, skippedCount, cancelled := o.executeRunTasks(ctx, detail)
+	if cancelled {
+		_ = o.Runs.CancelRun(context.Background(), runID, "cancelled")
+		o.finishActive(runID)
+		o.publish(runID, RunEvent{RunID: runID, RunStatus: RunStatusCancelled, Message: "run cancelled", OccurredAt: time.Now().UTC()})
+		return
 	}
 
 	runStatus := RunStatusSuccess
@@ -319,6 +336,158 @@ func (o *Orchestrator) finishActive(runID int64) {
 	o.promoteNextQueued(context.Background())
 }
 
+type runTask struct {
+	Host    Host
+	HostRun HostRun
+}
+
+func (o *Orchestrator) executeRunTasks(ctx context.Context, detail RunDetail) (int, int, int, bool) {
+	tasks := make([]runTask, 0, len(detail.HostRuns))
+	successCount := 0
+	failureCount := 0
+	skippedCount := 0
+	for _, hostRun := range detail.HostRuns {
+		host, err := o.Hosts.Get(ctx, hostRun.HostID)
+		if err != nil {
+			failureCount++
+			_ = o.Runs.FinishHostRun(context.Background(), hostRun.ID, HostRunStatusFailed, -1, 0, false, err.Error())
+			continue
+		}
+		tasks = append(tasks, runTask{Host: host, HostRun: hostRun})
+	}
+	maxConcurrent := o.maxConcurrentForRun(ctx, detail)
+	for group := 0; group < 5; group++ {
+		groupTasks := make([]runTask, 0)
+		for _, task := range tasks {
+			if hostExecutionGroup(task.Host) == group {
+				groupTasks = append(groupTasks, task)
+			}
+		}
+		if len(groupTasks) == 0 {
+			continue
+		}
+		var outcomes []hostOutcome
+		if group == 0 && maxConcurrent > 1 {
+			outcomes = o.executeTaskGroupParallel(ctx, detail.Run.ID, groupTasks, maxConcurrent)
+		} else {
+			outcomes = o.executeTaskGroupSequential(ctx, detail.Run.ID, groupTasks)
+		}
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return successCount, failureCount, skippedCount, true
+		}
+		for _, outcome := range outcomes {
+			switch outcome.Status {
+			case HostRunStatusSuccess:
+				successCount++
+			case HostRunStatusSkipped:
+				skippedCount++
+			default:
+				failureCount++
+			}
+		}
+	}
+	return successCount, failureCount, skippedCount, false
+}
+
+func (o *Orchestrator) executeTaskGroupSequential(ctx context.Context, runID int64, tasks []runTask) []hostOutcome {
+	outcomes := make([]hostOutcome, 0, len(tasks))
+	for _, task := range tasks {
+		if err := ctx.Err(); err != nil {
+			return outcomes
+		}
+		outcomes = append(outcomes, o.executeRunTask(ctx, runID, task))
+	}
+	return outcomes
+}
+
+func (o *Orchestrator) executeTaskGroupParallel(ctx context.Context, runID int64, tasks []runTask, maxConcurrent int) []hostOutcome {
+	if maxConcurrent < 1 {
+		maxConcurrent = 1
+	}
+	sem := make(chan struct{}, maxConcurrent)
+	results := make(chan hostOutcome, len(tasks))
+	var waitGroup sync.WaitGroup
+	for _, task := range tasks {
+		if err := ctx.Err(); err != nil {
+			break
+		}
+		sem <- struct{}{}
+		waitGroup.Add(1)
+		go func(task runTask) {
+			defer waitGroup.Done()
+			defer func() { <-sem }()
+			results <- o.executeRunTask(ctx, runID, task)
+		}(task)
+	}
+	waitGroup.Wait()
+	close(results)
+	outcomes := make([]hostOutcome, 0, len(tasks))
+	for outcome := range results {
+		outcomes = append(outcomes, outcome)
+	}
+	return outcomes
+}
+
+func (o *Orchestrator) executeRunTask(ctx context.Context, runID int64, task runTask) hostOutcome {
+	host := task.Host
+	hostRun := task.HostRun
+	if err := o.Runs.StartHostRun(context.Background(), hostRun.ID); err != nil && o.Logger != nil {
+		o.Logger.Error("start host run", "error", err, "host_run_id", hostRun.ID)
+	}
+	o.publish(runID, RunEvent{RunID: runID, HostRunID: hostRun.ID, HostID: host.ID, HostName: host.Name, HostStatus: HostRunStatusRunning, Message: "host update started", OccurredAt: time.Now().UTC()})
+	outcome := o.executeHostRun(ctx, host, hostRun)
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return outcome
+	}
+	if err := o.Runs.FinishHostRun(context.Background(), hostRun.ID, outcome.Status, outcome.ExitCode, outcome.Packages, outcome.RebootRequired, outcome.Summary); err != nil && o.Logger != nil {
+		o.Logger.Error("finish host run", "error", err, "host_run_id", hostRun.ID)
+	}
+	o.publish(runID, RunEvent{RunID: runID, HostRunID: hostRun.ID, HostID: host.ID, HostName: host.Name, HostStatus: outcome.Status, Message: outcome.Summary, Reboot: outcome.RebootRequired, OccurredAt: time.Now().UTC()})
+	return outcome
+}
+
+func (o *Orchestrator) maxConcurrentForRun(ctx context.Context, detail RunDetail) int {
+	if detail.Run.ScheduleID == nil || o.Settings == nil {
+		return 1
+	}
+	enabled, err := o.Settings.ConcurrencyEnabled(ctx)
+	if err != nil || !enabled {
+		if err != nil && o.Logger != nil {
+			o.Logger.Error("read concurrency setting", "error", err)
+		}
+		return 1
+	}
+	schedule, err := o.Schedules.Get(ctx, *detail.Run.ScheduleID)
+	if err != nil {
+		if o.Logger != nil {
+			o.Logger.Error("read schedule concurrency", "error", err, "schedule_id", *detail.Run.ScheduleID)
+		}
+		return 1
+	}
+	if schedule.MaxConcurrent < 2 {
+		return 1
+	}
+	if schedule.MaxConcurrent > 10 {
+		return 10
+	}
+	return schedule.MaxConcurrent
+}
+
+func hostExecutionGroup(host Host) int {
+	switch {
+	case host.Type == HostTypeTrueNAS || pkgmgr.PackageManager(host.PackageManager) == pkgmgr.ManagerTrueNASAPI:
+		return 1
+	case host.Type == HostTypeHAOS || pkgmgr.PackageManager(host.PackageManager) == pkgmgr.ManagerHAOSAPI:
+		return 2
+	case host.IsProxmoxHost:
+		return 3
+	case host.IsSelf:
+		return 4
+	default:
+		return 0
+	}
+}
+
 func (o *Orchestrator) executeHostRun(ctx context.Context, host Host, hostRun HostRun) hostOutcome {
 	if host.Type == HostTypeTrueNAS || pkgmgr.PackageManager(host.PackageManager) == pkgmgr.ManagerTrueNASAPI {
 		return o.executeTrueNASRun(ctx, host, hostRun)
@@ -327,8 +496,7 @@ func (o *Orchestrator) executeHostRun(ctx context.Context, host Host, hostRun Ho
 		return o.executeHAOSRun(ctx, host, hostRun)
 	}
 	if host.IsSelf {
-		appendCleanLog(hostRun.LogPath, "Self-update execution arrives in Milestone 5.\n")
-		return hostOutcome{Status: HostRunStatusSkipped, ExitCode: 0, Summary: "self-update arrives in Milestone 5"}
+		return o.executeSelfUpdateRun(ctx, host, hostRun)
 	}
 
 	if err := os.MkdirAll(filepath.Dir(hostRun.LogPath), 0o755); err != nil {
@@ -380,6 +548,28 @@ func (o *Orchestrator) executeHostRun(ctx context.Context, host Host, hostRun Ho
 	}
 	rebootRequired := o.checkRebootRequired(ctx, runner, manager, paths, hostRun.LogPath)
 	return hostOutcome{Status: HostRunStatusSuccess, ExitCode: result.ExitCode, RebootRequired: rebootRequired, Summary: "update completed"}
+}
+
+func (o *Orchestrator) executeSelfUpdateRun(ctx context.Context, host Host, hostRun HostRun) hostOutcome {
+	appendCleanLog(hostRun.LogPath, fmt.Sprintf("patchpilot self host %s reached at %s\n", host.Name, time.Now().UTC().Format(time.RFC3339)))
+	if o.SelfUpdater == nil {
+		message := "self-update scheduler is not configured"
+		appendCleanLog(hostRun.LogPath, message+"\n")
+		return hostOutcome{Status: HostRunStatusFailed, ExitCode: -1, Summary: message}
+	}
+	unitName, logPath, err := o.SelfUpdater.Schedule(ctx, hostRun.RunID)
+	if err != nil {
+		if errors.Is(err, selfupdate.ErrUnsupported) {
+			message := "self-update not supported on macOS development environment"
+			appendCleanLog(hostRun.LogPath, message+"\n")
+			return hostOutcome{Status: HostRunStatusSkipped, ExitCode: 0, Summary: message}
+		}
+		appendCleanLog(hostRun.LogPath, err.Error()+"\n")
+		return hostOutcome{Status: HostRunStatusFailed, ExitCode: -1, Summary: err.Error()}
+	}
+	message := fmt.Sprintf("self-update scheduled, see %s", filepath.Base(logPath))
+	appendCleanLog(hostRun.LogPath, fmt.Sprintf("scheduled %s; output: %s\n", unitName, logPath))
+	return hostOutcome{Status: HostRunStatusSuccess, ExitCode: 0, Summary: message}
 }
 
 func (o *Orchestrator) executeTrueNASRun(ctx context.Context, host Host, hostRun HostRun) hostOutcome {

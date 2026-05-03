@@ -98,7 +98,10 @@ func (m model) handleSchedulesKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) handleScheduleEditorKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
-	fields := scheduleEditorFields()
+	fields := m.scheduleEditorFields()
+	if m.scheduleEditor.field >= len(fields) {
+		m.scheduleEditor.field = len(fields) - 1
+	}
 	switch key.String() {
 	case "esc":
 		m.scheduleScreen = scheduleScreenList
@@ -159,7 +162,10 @@ func (m model) handleScheduleEditorKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *model) adjustScheduleField(delta int) {
-	fields := scheduleEditorFields()
+	fields := m.scheduleEditorFields()
+	if m.scheduleEditor.field >= len(fields) {
+		m.scheduleEditor.field = len(fields) - 1
+	}
 	field := fields[m.scheduleEditor.field]
 	switch field {
 	case "Frequency":
@@ -184,6 +190,8 @@ func (m *model) adjustScheduleField(delta int) {
 		}
 	case "Enabled":
 		m.scheduleEditor.input.Enabled = !m.scheduleEditor.input.Enabled
+	case "Max":
+		m.scheduleEditor.input.MaxConcurrent = clamp(max(1, m.scheduleEditor.input.MaxConcurrent)+delta, 1, 10)
 	case "Hosts":
 		if len(m.hosts) > 0 {
 			m.scheduleEditor.hostCursor = clamp(m.scheduleEditor.hostCursor+delta, 0, len(m.hosts)-1)
@@ -247,7 +255,10 @@ func (m model) renderSchedulesView(bodyHeight int) string {
 }
 
 func (m model) renderScheduleEditor(bodyHeight int) string {
-	fields := scheduleEditorFields()
+	fields := m.scheduleEditorFields()
+	if m.scheduleEditor.field >= len(fields) {
+		m.scheduleEditor.field = len(fields) - 1
+	}
 	input := m.scheduleEditor.input
 	values := map[string]string{
 		"Name":      input.Name,
@@ -255,6 +266,7 @@ func (m model) renderScheduleEditor(bodyHeight int) string {
 		"Hour":      fmt.Sprintf("%02d", input.Hour),
 		"Minute":    fmt.Sprintf("%02d", input.Minute),
 		"Day":       scheduleDayValue(input),
+		"Max":       strconv.Itoa(max(1, input.MaxConcurrent)),
 		"Enabled":   strconv.FormatBool(input.Enabled),
 		"Hosts":     fmt.Sprintf("%d selected", len(input.HostIDs)),
 		"Save":      "press Enter",
@@ -330,7 +342,7 @@ func (m model) defaultScheduleInput() core.ScheduleInput {
 			hostIDs = append(hostIDs, host.ID)
 		}
 	}
-	return core.ScheduleInput{Name: "Weekly maintenance", Frequency: core.FrequencyWeekly, Hour: 3, Minute: 0, DayOfWeek: 0, DayOfMonth: 1, Enabled: true, HostIDs: hostIDs}
+	return core.ScheduleInput{Name: "Weekly maintenance", Frequency: core.FrequencyWeekly, Hour: 3, Minute: 0, DayOfWeek: 0, DayOfMonth: 1, Enabled: true, HostIDs: hostIDs, MaxConcurrent: 1}
 }
 
 func loadSchedulesCmd(ctx context.Context, client *ipc.Client) tea.Cmd {
@@ -375,8 +387,12 @@ func runScheduleCmd(ctx context.Context, client *ipc.Client, id int64) tea.Cmd {
 	}
 }
 
-func scheduleEditorFields() []string {
-	return []string{"Name", "Frequency", "Hour", "Minute", "Day", "Enabled", "Hosts", "Save"}
+func (m model) scheduleEditorFields() []string {
+	fields := []string{"Name", "Frequency", "Hour", "Minute", "Day", "Enabled"}
+	if m.settingsSnapshot != nil && m.settingsSnapshot.ConcurrencyEnabled {
+		fields = append(fields, "Max")
+	}
+	return append(fields, "Hosts", "Save")
 }
 
 func scheduleDayValue(input core.ScheduleInput) string {

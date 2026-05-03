@@ -3,6 +3,9 @@ package handlers
 import (
 	"context"
 	"net/http"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/TheOriUHD/patchpilot/internal/core"
@@ -13,7 +16,7 @@ import (
 func RegisterRuns(router chi.Router, orchestrator *core.Orchestrator, tailer *stream.LogTailer) {
 	router.Route("/api/runs", func(r chi.Router) {
 		r.Get("/", func(w http.ResponseWriter, req *http.Request) {
-			runs, err := orchestrator.ListRuns(req.Context())
+			runs, err := orchestrator.ListRunsPage(req.Context(), runListQuery(req))
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, err)
 				return
@@ -33,6 +36,20 @@ func RegisterRuns(router chi.Router, orchestrator *core.Orchestrator, tailer *st
 				return
 			}
 			writeJSON(w, http.StatusOK, detail)
+		})
+
+		r.Get("/{id}/logs", func(w http.ResponseWriter, req *http.Request) {
+			id, err := idParam(req, "id")
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			logs, err := orchestrator.RunLogs(req.Context(), id, 2000)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, logs)
 		})
 
 		r.Post("/{id}/cancel", func(w http.ResponseWriter, req *http.Request) {
@@ -80,6 +97,42 @@ func RegisterRuns(router chi.Router, orchestrator *core.Orchestrator, tailer *st
 			serveSSEMany(req.Context(), w, channels)
 		})
 	})
+}
+
+func runListQuery(req *http.Request) core.RunListQuery {
+	query := req.URL.Query()
+	limit, _ := strconv.Atoi(query.Get("limit"))
+	offset, _ := strconv.Atoi(query.Get("offset"))
+	result := core.RunListQuery{Limit: limit, Offset: offset}
+	for _, value := range splitCSV(query.Get("status")) {
+		result.Statuses = append(result.Statuses, core.RunStatus(value))
+	}
+	for _, value := range splitCSV(query.Get("trigger")) {
+		result.Triggers = append(result.Triggers, core.RunTrigger(value))
+	}
+	switch query.Get("range") {
+	case "24h":
+		since := time.Now().UTC().Add(-24 * time.Hour)
+		result.Since = &since
+	case "7d":
+		since := time.Now().UTC().Add(-7 * 24 * time.Hour)
+		result.Since = &since
+	case "30d":
+		since := time.Now().UTC().Add(-30 * 24 * time.Hour)
+		result.Since = &since
+	}
+	return result
+}
+
+func splitCSV(value string) []string {
+	parts := []string{}
+	for _, part := range strings.Split(value, ",") {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			parts = append(parts, trimmed)
+		}
+	}
+	return parts
 }
 
 func serveSSEMany(ctx context.Context, w http.ResponseWriter, channels []<-chan stream.Event) {

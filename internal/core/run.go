@@ -50,13 +50,25 @@ const (
 
 // Run is the persisted top-level run record.
 type Run struct {
-	ID         int64      `json:"id"`
-	Trigger    RunTrigger `json:"trigger"`
-	ScheduleID *int64     `json:"schedule_id,omitempty"`
-	Status     RunStatus  `json:"status"`
-	StartedAt  time.Time  `json:"started_at"`
-	FinishedAt *time.Time `json:"finished_at,omitempty"`
-	Summary    string     `json:"summary"`
+	ID              int64      `json:"id"`
+	Trigger         RunTrigger `json:"trigger"`
+	ScheduleID      *int64     `json:"schedule_id,omitempty"`
+	ScheduleName    string     `json:"schedule_name"`
+	Status          RunStatus  `json:"status"`
+	StartedAt       time.Time  `json:"started_at"`
+	FinishedAt      *time.Time `json:"finished_at,omitempty"`
+	HostCount       int        `json:"host_count"`
+	DurationSeconds int64      `json:"duration_seconds"`
+	Summary         string     `json:"summary"`
+}
+
+// RunListQuery filters and paginates the global run log.
+type RunListQuery struct {
+	Limit    int
+	Offset   int
+	Statuses []RunStatus
+	Triggers []RunTrigger
+	Since    *time.Time
 }
 
 // HostRun is the persisted status of one host inside a run.
@@ -100,4 +112,17 @@ type RunEvent struct {
 	Message    string        `json:"message"`
 	Reboot     bool          `json:"reboot_required,omitempty"`
 	OccurredAt time.Time     `json:"occurred_at"`
+}
+
+// RunLogResponse contains persisted log lines for historical run viewing.
+type RunLogResponse struct {
+	Entries []RunLogEntry `json:"entries"`
+}
+
+// RunLogEntry is one persisted host-run log line.
+type RunLogEntry struct {
+	HostRunID int64  `json:"host_run_id"`
+	HostID    int64  `json:"host_id"`
+	HostName  string `json:"host_name"`
+	Line      string `json:"line"`
 }

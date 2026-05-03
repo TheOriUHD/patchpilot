@@ -159,8 +159,39 @@ func (c *Client) RunScheduleNow(ctx context.Context, id int64) (core.RunDetail, 
 
 // ListRuns fetches recent runs.
 func (c *Client) ListRuns(ctx context.Context) ([]core.Run, error) {
+	return c.ListRunsPage(ctx, core.RunListQuery{Limit: 100})
+}
+
+// ListRunsPage fetches paginated run history.
+func (c *Client) ListRunsPage(ctx context.Context, query core.RunListQuery) ([]core.Run, error) {
 	var runs []core.Run
-	if err := c.doJSON(ctx, http.MethodGet, "/api/runs/", nil, &runs); err != nil {
+	path := fmt.Sprintf("/api/runs/?limit=%d&offset=%d", query.Limit, query.Offset)
+	if len(query.Statuses) > 0 {
+		parts := make([]string, 0, len(query.Statuses))
+		for _, status := range query.Statuses {
+			parts = append(parts, string(status))
+		}
+		path += "&status=" + strings.Join(parts, ",")
+	}
+	if len(query.Triggers) > 0 {
+		parts := make([]string, 0, len(query.Triggers))
+		for _, trigger := range query.Triggers {
+			parts = append(parts, string(trigger))
+		}
+		path += "&trigger=" + strings.Join(parts, ",")
+	}
+	if query.Since != nil {
+		duration := time.Since(*query.Since)
+		switch {
+		case duration <= 25*time.Hour:
+			path += "&range=24h"
+		case duration <= 8*24*time.Hour:
+			path += "&range=7d"
+		case duration <= 31*24*time.Hour:
+			path += "&range=30d"
+		}
+	}
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, &runs); err != nil {
 		return nil, err
 	}
 	return runs, nil
@@ -173,6 +204,52 @@ func (c *Client) GetRun(ctx context.Context, id int64) (core.RunDetail, error) {
 		return core.RunDetail{}, err
 	}
 	return detail, nil
+}
+
+// GetRunLogs fetches persisted log lines for a historical run.
+func (c *Client) GetRunLogs(ctx context.Context, id int64) (core.RunLogResponse, error) {
+	var logs core.RunLogResponse
+	if err := c.doJSON(ctx, http.MethodGet, fmt.Sprintf("/api/runs/%d/logs", id), nil, &logs); err != nil {
+		return core.RunLogResponse{}, err
+	}
+	return logs, nil
+}
+
+// Settings fetches the daemon settings snapshot.
+func (c *Client) Settings(ctx context.Context) (core.SettingsSnapshot, error) {
+	var snapshot core.SettingsSnapshot
+	if err := c.doJSON(ctx, http.MethodGet, "/api/settings/", nil, &snapshot); err != nil {
+		return core.SettingsSnapshot{}, err
+	}
+	return snapshot, nil
+}
+
+// SetConcurrency toggles experimental concurrency.
+func (c *Client) SetConcurrency(ctx context.Context, enabled bool) (core.SettingsSnapshot, error) {
+	var snapshot core.SettingsSnapshot
+	if err := c.doJSON(ctx, http.MethodPut, "/api/settings/concurrency", core.SettingsUpdate{ConcurrencyEnabled: enabled}, &snapshot); err != nil {
+		return core.SettingsSnapshot{}, err
+	}
+	return snapshot, nil
+}
+
+// RotateKeypair starts SSH key rotation.
+func (c *Client) RotateKeypair(ctx context.Context) error {
+	return c.doJSON(ctx, http.MethodPost, "/api/settings/ssh/rotate", nil, nil)
+}
+
+// ExportInventory writes a daemon-side inventory backup.
+func (c *Client) ExportInventory(ctx context.Context, path string) error {
+	return c.doJSON(ctx, http.MethodPost, "/api/settings/inventory/export", core.InventoryPathRequest{Path: path}, nil)
+}
+
+// ImportInventory imports a daemon-side inventory backup.
+func (c *Client) ImportInventory(ctx context.Context, request core.InventoryPathRequest) (core.InventoryImportResult, error) {
+	var result core.InventoryImportResult
+	if err := c.doJSON(ctx, http.MethodPost, "/api/settings/inventory/import", request, &result); err != nil {
+		return core.InventoryImportResult{}, err
+	}
+	return result, nil
 }
 
 // CancelRun cancels a run.

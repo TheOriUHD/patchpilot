@@ -60,9 +60,9 @@ func (r *ScheduleRepository) Create(ctx context.Context, input core.ScheduleInpu
 	}
 	defer rollback(tx)
 	result, err := tx.ExecContext(ctx, `
-        INSERT INTO schedules (name, frequency, minute, hour, day_of_week, day_of_month, enabled, next_run_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `, input.Name, input.Frequency, input.Minute, input.Hour, input.DayOfWeek, input.DayOfMonth, boolInt(input.Enabled), nextRunAt)
+		INSERT INTO schedules (name, frequency, minute, hour, day_of_week, day_of_month, enabled, max_concurrent, next_run_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, input.Name, input.Frequency, input.Minute, input.Hour, input.DayOfWeek, input.DayOfMonth, boolInt(input.Enabled), normalizeMaxConcurrent(input.MaxConcurrent), nextRunAt)
 	if err != nil {
 		return core.Schedule{}, fmt.Errorf("insert schedule: %w", err)
 	}
@@ -87,10 +87,10 @@ func (r *ScheduleRepository) Update(ctx context.Context, id int64, input core.Sc
 	}
 	defer rollback(tx)
 	if _, err := tx.ExecContext(ctx, `
-        UPDATE schedules
-        SET name = ?, frequency = ?, minute = ?, hour = ?, day_of_week = ?, day_of_month = ?, enabled = ?, next_run_at = ?
+		UPDATE schedules
+		SET name = ?, frequency = ?, minute = ?, hour = ?, day_of_week = ?, day_of_month = ?, enabled = ?, max_concurrent = ?, next_run_at = ?
         WHERE id = ?
-    `, input.Name, input.Frequency, input.Minute, input.Hour, input.DayOfWeek, input.DayOfMonth, boolInt(input.Enabled), nextRunAt, id); err != nil {
+	`, input.Name, input.Frequency, input.Minute, input.Hour, input.DayOfWeek, input.DayOfMonth, boolInt(input.Enabled), normalizeMaxConcurrent(input.MaxConcurrent), nextRunAt, id); err != nil {
 		return core.Schedule{}, fmt.Errorf("update schedule %d: %w", id, err)
 	}
 	if err := replaceScheduleHosts(ctx, tx, id, input.HostIDs); err != nil {
@@ -195,8 +195,8 @@ func replaceScheduleHosts(ctx context.Context, tx *sql.Tx, scheduleID int64, hos
 
 func scheduleSelect() string {
 	return `
-        SELECT s.id, s.name, s.frequency, COALESCE(s.minute, 0), COALESCE(s.hour, 0), COALESCE(s.day_of_week, 0), COALESCE(s.day_of_month, 1),
-               s.enabled, s.last_run_at, s.next_run_at, s.last_skipped_at, COALESCE(s.last_skip_reason, ''), s.created_at, s.updated_at,
+		SELECT s.id, s.name, s.frequency, COALESCE(s.minute, 0), COALESCE(s.hour, 0), COALESCE(s.day_of_week, 0), COALESCE(s.day_of_month, 1),
+		       s.enabled, COALESCE(s.max_concurrent, 1), s.last_run_at, s.next_run_at, s.last_skipped_at, COALESCE(s.last_skip_reason, ''), s.created_at, s.updated_at,
                COUNT(sh.host_id) AS host_count
         FROM schedules s
         LEFT JOIN schedule_hosts sh ON sh.schedule_id = s.id
@@ -210,11 +210,12 @@ func scanSchedule(scanner interface{ Scan(dest ...any) error }) (core.Schedule, 
 	var lastRun sql.NullTime
 	var nextRun sql.NullTime
 	var lastSkipped sql.NullTime
-	if err := scanner.Scan(&schedule.ID, &schedule.Name, &frequency, &schedule.Minute, &schedule.Hour, &schedule.DayOfWeek, &schedule.DayOfMonth, &enabled, &lastRun, &nextRun, &lastSkipped, &schedule.LastSkipReason, &schedule.CreatedAt, &schedule.UpdatedAt, &schedule.HostCount); err != nil {
+	if err := scanner.Scan(&schedule.ID, &schedule.Name, &frequency, &schedule.Minute, &schedule.Hour, &schedule.DayOfWeek, &schedule.DayOfMonth, &enabled, &schedule.MaxConcurrent, &lastRun, &nextRun, &lastSkipped, &schedule.LastSkipReason, &schedule.CreatedAt, &schedule.UpdatedAt, &schedule.HostCount); err != nil {
 		return core.Schedule{}, err
 	}
 	schedule.Frequency = core.Frequency(frequency)
 	schedule.Enabled = enabled == 1
+	schedule.MaxConcurrent = normalizeMaxConcurrent(schedule.MaxConcurrent)
 	if lastRun.Valid {
 		schedule.LastRunAt = &lastRun.Time
 	}
@@ -225,4 +226,14 @@ func scanSchedule(scanner interface{ Scan(dest ...any) error }) (core.Schedule, 
 		schedule.LastSkippedAt = &lastSkipped.Time
 	}
 	return schedule, nil
+}
+
+func normalizeMaxConcurrent(value int) int {
+	if value < 1 {
+		return 1
+	}
+	if value > 10 {
+		return 10
+	}
+	return value
 }

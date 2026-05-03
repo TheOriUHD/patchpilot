@@ -1,10 +1,14 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
 	"time"
+
+	remotessh "github.com/TheOriUHD/patchpilot/internal/ssh"
+	golangssh "golang.org/x/crypto/ssh"
 )
 
 func TestOrderHostsGroupOrder(t *testing.T) {
@@ -22,6 +26,124 @@ func TestOrderHostsGroupOrder(t *testing.T) {
 		if host.ID != want[index] {
 			t.Fatalf("ordered[%d] = %d, want %d", index, host.ID, want[index])
 		}
+	}
+}
+
+func TestConcurrencyGating(t *testing.T) {
+	t.Parallel()
+	scheduleID := int64(12)
+	orchestrator := &Orchestrator{
+		Schedules: &fakeScheduleStore{schedule: Schedule{ID: scheduleID, Name: "weekly", MaxConcurrent: 7}},
+		Settings:  fakeSettingsStore{concurrency: true},
+	}
+	got := orchestrator.maxConcurrentForRun(context.Background(), RunDetail{Run: Run{ScheduleID: &scheduleID}})
+	if got != 7 {
+		t.Fatalf("maxConcurrentForRun() = %d, want 7", got)
+	}
+	orchestrator.Settings = fakeSettingsStore{concurrency: false}
+	got = orchestrator.maxConcurrentForRun(context.Background(), RunDetail{Run: Run{ScheduleID: &scheduleID}})
+	if got != 1 {
+		t.Fatalf("maxConcurrentForRun() with setting off = %d, want 1", got)
+	}
+	groups := map[string]int{
+		"standard": hostExecutionGroup(Host{Type: HostTypeStandard}),
+		"truenas":  hostExecutionGroup(Host{Type: HostTypeTrueNAS}),
+		"haos":     hostExecutionGroup(Host{Type: HostTypeHAOS}),
+		"proxmox":  hostExecutionGroup(Host{Type: HostTypeStandard, IsProxmoxHost: true}),
+		"self":     hostExecutionGroup(Host{Type: HostTypeSelf, IsSelf: true}),
+	}
+	want := map[string]int{"standard": 0, "truenas": 1, "haos": 2, "proxmox": 3, "self": 4}
+	for name, group := range groups {
+		if group != want[name] {
+			t.Fatalf("hostExecutionGroup(%s) = %d, want %d", name, group, want[name])
+		}
+	}
+}
+
+func TestSettingsServiceConcurrencyAudit(t *testing.T) {
+	t.Parallel()
+	settings := &fakeSettingsStore{}
+	audit := &fakeAuditStore{}
+	service := SettingsService{Settings: settings, Audit: audit}
+	if err := service.SetConcurrency(context.Background(), true); err != nil {
+		t.Fatalf("SetConcurrency() error: %v", err)
+	}
+	if !settings.concurrency {
+		t.Fatalf("concurrency setting was not updated")
+	}
+	if audit.lastAction != "settings.concurrency_changed" {
+		t.Fatalf("audit action = %q, want settings.concurrency_changed", audit.lastAction)
+	}
+}
+
+func TestSettingsServiceRotateKeypairSuccess(t *testing.T) {
+	t.Parallel()
+	keyStore := remotessh.NewKeyStore(t.TempDir())
+	oldKey, err := keyStore.Ensure(context.Background())
+	if err != nil {
+		t.Fatalf("Ensure() error: %v", err)
+	}
+	audit := &fakeAuditStore{}
+	service := SettingsService{
+		Hosts: &fakeHostStore{hosts: map[int64]Host{
+			1: {ID: 1, Name: "vm1", Hostname: "vm1", SSHUser: "patchpilot", Type: HostTypeStandard, Enabled: true},
+			2: {ID: 2, Name: "nas", Hostname: "nas", Type: HostTypeTrueNAS, Enabled: true},
+		}},
+		Audit: audit,
+		Keys:  keyStore,
+	}
+	service.ConnectKey = func(context.Context, string, int, string, golangssh.Signer) (remotessh.Runner, error) {
+		return &fakeSSHRunner{}, nil
+	}
+	if err := service.RotateKeypair(context.Background()); err != nil {
+		t.Fatalf("RotateKeypair() error: %v", err)
+	}
+	newKey, err := keyStore.Ensure(context.Background())
+	if err != nil {
+		t.Fatalf("Ensure() after rotate error: %v", err)
+	}
+	if newKey.PublicKey == oldKey.PublicKey {
+		t.Fatalf("public key was not replaced")
+	}
+	if audit.lastAction != "settings.key_rotation_success" {
+		t.Fatalf("audit action = %q, want settings.key_rotation_success", audit.lastAction)
+	}
+}
+
+func TestSettingsServiceRotateKeypairAbortKeepsOldKey(t *testing.T) {
+	t.Parallel()
+	keyStore := remotessh.NewKeyStore(t.TempDir())
+	oldKey, err := keyStore.Ensure(context.Background())
+	if err != nil {
+		t.Fatalf("Ensure() error: %v", err)
+	}
+	audit := &fakeAuditStore{}
+	service := SettingsService{
+		Hosts: &fakeHostStore{hosts: map[int64]Host{
+			1: {ID: 1, Name: "vm1", Hostname: "vm1", SSHUser: "patchpilot", Type: HostTypeStandard, Enabled: true},
+			2: {ID: 2, Name: "vm2", Hostname: "vm2", SSHUser: "patchpilot", Type: HostTypeStandard, Enabled: true},
+		}},
+		Audit: audit,
+		Keys:  keyStore,
+	}
+	service.ConnectKey = func(_ context.Context, host string, _ int, _ string, signer golangssh.Signer) (remotessh.Runner, error) {
+		if host == "vm2" && !bytes.Equal(signer.PublicKey().Marshal(), oldKey.Signer.PublicKey().Marshal()) {
+			return nil, errors.New("new key rejected")
+		}
+		return &fakeSSHRunner{}, nil
+	}
+	if err := service.RotateKeypair(context.Background()); err == nil {
+		t.Fatalf("RotateKeypair() error = nil, want abort")
+	}
+	currentKey, err := keyStore.Ensure(context.Background())
+	if err != nil {
+		t.Fatalf("Ensure() after abort error: %v", err)
+	}
+	if currentKey.PublicKey != oldKey.PublicKey {
+		t.Fatalf("public key changed after aborted rotation")
+	}
+	if audit.lastAction != "settings.key_rotation_abort" {
+		t.Fatalf("audit action = %q, want settings.key_rotation_abort", audit.lastAction)
 	}
 }
 
@@ -57,7 +179,13 @@ type fakeHostStore struct {
 	hosts map[int64]Host
 }
 
-func (s *fakeHostStore) List(context.Context) ([]Host, error) { return nil, nil }
+func (s *fakeHostStore) List(context.Context) ([]Host, error) {
+	hosts := make([]Host, 0, len(s.hosts))
+	for _, host := range s.hosts {
+		hosts = append(hosts, host)
+	}
+	return hosts, nil
+}
 func (s *fakeHostStore) Get(_ context.Context, id int64) (Host, error) {
 	return s.hosts[id], nil
 }
@@ -131,3 +259,28 @@ func (s *fakeAuditStore) Create(_ context.Context, event AuditEvent) error {
 	s.lastAction = event.Action
 	return nil
 }
+
+type fakeSettingsStore struct {
+	concurrency bool
+}
+
+func (s fakeSettingsStore) GetBool(context.Context, string, bool) (bool, error) {
+	return s.concurrency, nil
+}
+
+func (s *fakeSettingsStore) SetBool(_ context.Context, _ string, value bool) error {
+	s.concurrency = value
+	return nil
+}
+
+func (s fakeSettingsStore) ConcurrencyEnabled(context.Context) (bool, error) {
+	return s.concurrency, nil
+}
+
+type fakeSSHRunner struct{}
+
+func (r *fakeSSHRunner) Run(context.Context, string, []byte) (remotessh.CommandResult, error) {
+	return remotessh.CommandResult{}, nil
+}
+
+func (r *fakeSSHRunner) Close() error { return nil }

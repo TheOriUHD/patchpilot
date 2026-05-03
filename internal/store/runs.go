@@ -1,10 +1,13 @@
 package store
 
 import (
+	"bufio"
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/TheOriUHD/patchpilot/internal/core"
@@ -61,12 +64,57 @@ func (r *RunRepository) CreateRunWithHosts(ctx context.Context, input core.RunCr
 
 // List returns recent runs in reverse chronological order.
 func (r *RunRepository) List(ctx context.Context) ([]core.Run, error) {
+	return r.ListPage(ctx, core.RunListQuery{Limit: 200})
+}
+
+// ListPage returns filtered runs in reverse chronological order.
+func (r *RunRepository) ListPage(ctx context.Context, query core.RunListQuery) ([]core.Run, error) {
+	limit := query.Limit
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+	offset := query.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	where := []string{}
+	args := []any{}
+	if len(query.Statuses) > 0 {
+		placeholders := make([]string, 0, len(query.Statuses))
+		for _, status := range query.Statuses {
+			placeholders = append(placeholders, "?")
+			args = append(args, status)
+		}
+		where = append(where, "r.status IN ("+strings.Join(placeholders, ",")+")")
+	}
+	if len(query.Triggers) > 0 {
+		placeholders := make([]string, 0, len(query.Triggers))
+		for _, trigger := range query.Triggers {
+			placeholders = append(placeholders, "?")
+			args = append(args, trigger)
+		}
+		where = append(where, "r.trigger IN ("+strings.Join(placeholders, ",")+")")
+	}
+	if query.Since != nil {
+		where = append(where, "r.started_at >= ?")
+		args = append(args, *query.Since)
+	}
+	whereSQL := ""
+	if len(where) > 0 {
+		whereSQL = "WHERE " + strings.Join(where, " AND ")
+	}
+	args = append(args, limit, offset)
 	rows, err := r.db.QueryContext(ctx, `
-        SELECT id, trigger, schedule_id, status, started_at, finished_at, COALESCE(summary, '')
-        FROM runs
-        ORDER BY started_at DESC, id DESC
-        LIMIT 200
-    `)
+		SELECT r.id, r.trigger, r.schedule_id, COALESCE(s.name, ''), r.status, r.started_at, r.finished_at,
+		       COUNT(hr.id), COALESCE(r.summary, '')
+		FROM runs r
+		LEFT JOIN schedules s ON s.id = r.schedule_id
+		LEFT JOIN host_runs hr ON hr.run_id = r.id
+		`+whereSQL+`
+		GROUP BY r.id
+		ORDER BY r.started_at DESC, r.id DESC
+		LIMIT ? OFFSET ?
+	`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list runs: %w", err)
 	}
@@ -74,7 +122,7 @@ func (r *RunRepository) List(ctx context.Context) ([]core.Run, error) {
 
 	runs := make([]core.Run, 0)
 	for rows.Next() {
-		run, err := scanRun(rows)
+		run, err := scanRunSummary(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -84,6 +132,45 @@ func (r *RunRepository) List(ctx context.Context) ([]core.Run, error) {
 		return nil, fmt.Errorf("iterate runs: %w", err)
 	}
 	return runs, nil
+}
+
+// Logs returns persisted log lines for a run.
+func (r *RunRepository) Logs(ctx context.Context, id int64, maxLines int) (core.RunLogResponse, error) {
+	if maxLines <= 0 || maxLines > 5000 {
+		maxLines = 2000
+	}
+	hostRuns, err := r.hostRuns(ctx, id)
+	if err != nil {
+		return core.RunLogResponse{}, err
+	}
+	entries := make([]core.RunLogEntry, 0)
+	for _, hostRun := range hostRuns {
+		if err := ctx.Err(); err != nil {
+			return core.RunLogResponse{}, err
+		}
+		file, err := os.Open(hostRun.LogPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return core.RunLogResponse{}, fmt.Errorf("open run log %s: %w", hostRun.LogPath, err)
+		}
+		scanner := bufio.NewScanner(file)
+		for scanner.Scan() {
+			entries = append(entries, core.RunLogEntry{HostRunID: hostRun.ID, HostID: hostRun.HostID, HostName: hostRun.HostName, Line: scanner.Text()})
+			if len(entries) > maxLines {
+				entries = entries[len(entries)-maxLines:]
+			}
+		}
+		if err := scanner.Err(); err != nil {
+			_ = file.Close()
+			return core.RunLogResponse{}, fmt.Errorf("read run log %s: %w", hostRun.LogPath, err)
+		}
+		if err := file.Close(); err != nil {
+			return core.RunLogResponse{}, fmt.Errorf("close run log %s: %w", hostRun.LogPath, err)
+		}
+	}
+	return core.RunLogResponse{Entries: entries}, nil
 }
 
 // Get returns a run with host runs.
@@ -242,6 +329,29 @@ func scanRun(scanner interface{ Scan(dest ...any) error }) (core.Run, error) {
 	}
 	if finishedAt.Valid {
 		run.FinishedAt = &finishedAt.Time
+	}
+	return run, nil
+}
+
+func scanRunSummary(scanner interface{ Scan(dest ...any) error }) (core.Run, error) {
+	var run core.Run
+	var trigger string
+	var status string
+	var scheduleID sql.NullInt64
+	var finishedAt sql.NullTime
+	if err := scanner.Scan(&run.ID, &trigger, &scheduleID, &run.ScheduleName, &status, &run.StartedAt, &finishedAt, &run.HostCount, &run.Summary); err != nil {
+		return core.Run{}, err
+	}
+	run.Trigger = core.RunTrigger(trigger)
+	run.Status = core.RunStatus(status)
+	if scheduleID.Valid {
+		run.ScheduleID = &scheduleID.Int64
+	}
+	if finishedAt.Valid {
+		run.FinishedAt = &finishedAt.Time
+		run.DurationSeconds = int64(finishedAt.Time.Sub(run.StartedAt).Seconds())
+	} else {
+		run.DurationSeconds = int64(time.Since(run.StartedAt).Seconds())
 	}
 	return run, nil
 }

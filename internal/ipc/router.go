@@ -12,12 +12,15 @@ import (
 )
 
 // NewRouter builds the daemon HTTP API routes.
-func NewRouter(startedAt time.Time, hosts *core.HostService, orchestrator *core.Orchestrator, scheduleEngine *scheduler.Engine, logTailer *stream.LogTailer) http.Handler {
+func NewRouter(startedAt time.Time, hosts *core.HostService, orchestrator *core.Orchestrator, scheduleEngine *scheduler.Engine, logTailer *stream.LogTailer, settings *core.SettingsService) http.Handler {
 	router := chi.NewRouter()
 	handlers.RegisterHealth(router, startedAt)
 	handlers.RegisterHosts(router, hosts, orchestrator)
 	handlers.RegisterWizard(router, hosts)
 	handlers.RegisterSchedules(router, orchestrator, scheduleEngine)
 	handlers.RegisterRuns(router, orchestrator, logTailer)
+	if settings != nil {
+		handlers.RegisterSettings(router, settings)
+	}
 	return router
 }
