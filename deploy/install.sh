@@ -5,6 +5,7 @@ APP=patchpilot
 USER_NAME=patchpilot
 GROUP_NAME=patchpilot
 BIN_PATH=/usr/local/bin/patchpilot
+BIN_BACKUP_PATH=/usr/local/bin/patchpilot.prev
 UNIT_PATH=/etc/systemd/system/patchpilot.service
 ETC_DIR=/etc/patchpilot
 DATA_DIR=/var/lib/patchpilot
@@ -130,8 +131,8 @@ install -d -o "$USER_NAME" -g "$GROUP_NAME" -m 0750 "$LOG_DIR"
 install -d -o "$USER_NAME" -g "$GROUP_NAME" -m 0700 "$SSH_DIR"
 
 if [ -f "$BIN_PATH" ]; then
-    install -m 0755 -o root -g root "$BIN_PATH" "$BIN_PATH.prev"
-    binary_backup_status="$BIN_PATH.prev"
+    install -m 0755 -o root -g root "$BIN_PATH" "$BIN_BACKUP_PATH"
+    binary_backup_status="$BIN_BACKUP_PATH"
 fi
 install -m 0755 -o root -g root "$BINARY_SRC" "$BIN_PATH"
 installed_md5=$(md5sum "$BIN_PATH")
@@ -217,13 +218,13 @@ fi
 
 warn_locale_if_needed
 
-printf '\nInstall summary:\n'
-printf '  binary: %s (%s, md5 %s)\n' "$binary_status" "$BIN_PATH" "$installed_md5"
-printf '  previous binary backup: %s\n' "$binary_backup_status"
-printf '  systemd unit: %s (%s)\n' "$unit_status" "$UNIT_PATH"
-printf '  config: %s (%s)\n' "$config_status" "$CONFIG_PATH"
-printf '  secret key: %s (%s)\n' "$secret_status" "$SECRET_KEY"
-printf '  ssh keypair: %s (%s)\n' "$ssh_status" "$SSH_KEY"
+printf '\nInstallation summary:\n'
+printf '  binary:       %s (md5: %s)\n' "$binary_status" "$installed_md5"
+printf '  backup:       %s\n' "$binary_backup_status"
+printf '  systemd unit: %s\n' "$unit_status"
+printf '  config.yaml:  %s\n' "$config_status"
+printf '  secret.key:   %s\n' "$secret_status"
+printf '  ssh keypair:  %s\n' "$ssh_status"
 
 printf '\nAdd this public key to authorized_keys on each host you want patchpilot to manage:\n\n'
 cat "$SSH_PUB"
