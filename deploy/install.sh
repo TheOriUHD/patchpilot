@@ -75,6 +75,7 @@ need_cmd chown
 need_cmd dd
 need_cmd getent
 need_cmd install
+need_cmd md5sum
 need_cmd runuser
 need_cmd ssh-keygen
 need_cmd systemctl
@@ -86,6 +87,13 @@ UNIT_SRC=${PATCHPILOT_SERVICE:-$SCRIPT_DIR/patchpilot.service}
 
 [ -f "$BINARY_SRC" ] || fail "binary not found: $BINARY_SRC"
 [ -f "$UNIT_SRC" ] || fail "systemd unit not found: $UNIT_SRC"
+
+binary_status=updated
+binary_backup_status="none (no previous binary)"
+config_status=preserved
+secret_status=preserved
+ssh_status=preserved
+unit_status=updated
 
 was_running=0
 if systemctl is-active --quiet "$APP" 2>/dev/null; then
@@ -121,19 +129,27 @@ install -d -o "$USER_NAME" -g "$GROUP_NAME" -m 0700 "$DATA_DIR"
 install -d -o "$USER_NAME" -g "$GROUP_NAME" -m 0750 "$LOG_DIR"
 install -d -o "$USER_NAME" -g "$GROUP_NAME" -m 0700 "$SSH_DIR"
 
-install -o root -g root -m 0755 "$BINARY_SRC" "$BIN_PATH"
+if [ -f "$BIN_PATH" ]; then
+    install -m 0755 -o root -g root "$BIN_PATH" "$BIN_PATH.prev"
+    binary_backup_status="$BIN_PATH.prev"
+fi
+install -m 0755 -o root -g root "$BINARY_SRC" "$BIN_PATH"
+installed_md5=$(md5sum "$BIN_PATH")
+installed_md5=${installed_md5%% *}
 
 if [ ! -f "$SSH_KEY" ]; then
     ssh-keygen -t ed25519 -N '' -C "patchpilot@$(hostname 2>/dev/null || printf unknown)" -f "$SSH_KEY" >/dev/null
     chown "$USER_NAME:$GROUP_NAME" "$SSH_KEY" "$SSH_PUB"
     chmod 0600 "$SSH_KEY"
     chmod 0644 "$SSH_PUB"
+    ssh_status=created
 else
     printf 'SSH key already exists; leaving it in place.\n'
     chown "$USER_NAME:$GROUP_NAME" "$SSH_KEY"
     chmod 0600 "$SSH_KEY"
     if [ ! -f "$SSH_PUB" ]; then
         ssh-keygen -y -f "$SSH_KEY" > "$SSH_PUB"
+        ssh_status="preserved private key; regenerated public key"
     fi
     chown "$USER_NAME:$GROUP_NAME" "$SSH_PUB"
     chmod 0644 "$SSH_PUB"
@@ -146,6 +162,7 @@ if [ ! -f "$SECRET_KEY" ]; then
     chmod 0640 "$TMP_SECRET"
     mv "$TMP_SECRET" "$SECRET_KEY"
     TMP_SECRET=
+    secret_status=created
 else
     printf 'Secret key already exists; leaving it in place.\n'
     size=$(wc -c < "$SECRET_KEY" | tr -d '[:space:]')
@@ -168,6 +185,7 @@ YAML
     chmod 0640 "$TMP_CONFIG"
     mv "$TMP_CONFIG" "$CONFIG_PATH"
     TMP_CONFIG=
+    config_status=created
 else
     printf 'Config already exists; leaving it in place.\n'
 fi
@@ -198,6 +216,14 @@ else
 fi
 
 warn_locale_if_needed
+
+printf '\nInstall summary:\n'
+printf '  binary: %s (%s, md5 %s)\n' "$binary_status" "$BIN_PATH" "$installed_md5"
+printf '  previous binary backup: %s\n' "$binary_backup_status"
+printf '  systemd unit: %s (%s)\n' "$unit_status" "$UNIT_PATH"
+printf '  config: %s (%s)\n' "$config_status" "$CONFIG_PATH"
+printf '  secret key: %s (%s)\n' "$secret_status" "$SECRET_KEY"
+printf '  ssh keypair: %s (%s)\n' "$ssh_status" "$SSH_KEY"
 
 printf '\nAdd this public key to authorized_keys on each host you want patchpilot to manage:\n\n'
 cat "$SSH_PUB"

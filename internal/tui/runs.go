@@ -286,7 +286,6 @@ func (m model) filteredLiveLogLines(hostRunID int64) []liveLogEntry {
 }
 
 func (m *model) openLiveRun(detail core.RunDetail) tea.Cmd {
-	logTUIDebugf("openLiveRun called")
 	m.clearConfirmations()
 	m.liveRun = &detail
 	m.liveLogLines = nil
