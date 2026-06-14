@@ -16,6 +16,8 @@ type Styles struct {
 	Base         lipgloss.Style
 	Tab          lipgloss.Style
 	ActiveTab    lipgloss.Style
+	HoverTab     lipgloss.Style
+	HoverRow     lipgloss.Style
 	StatusBar    lipgloss.Style
 	StatusOK     lipgloss.Style
 	StatusBad    lipgloss.Style
@@ -54,6 +56,12 @@ func NewStyles() Styles {
 			Padding(0, 1).
 			Foreground(accent).
 			Bold(true),
+		HoverTab: lipgloss.NewStyle().
+			Padding(0, 1).
+			Foreground(accent).
+			Background(lipgloss.AdaptiveColor{Light: "#DDE7FF", Dark: "#2F3B5F"}),
+		HoverRow: lipgloss.NewStyle().
+			Background(lipgloss.AdaptiveColor{Light: "#EEF3FF", Dark: "#2F3B5F"}),
 		StatusBar: lipgloss.NewStyle().
 			Padding(0, 1).
 			Foreground(muted),
@@ -91,6 +99,8 @@ func monochromeStyles() Styles {
 		Base:         lipgloss.NewStyle(),
 		Tab:          lipgloss.NewStyle().Padding(0, 1),
 		ActiveTab:    lipgloss.NewStyle().Padding(0, 1).Underline(true),
+		HoverTab:     lipgloss.NewStyle().Padding(0, 1).Bold(true),
+		HoverRow:     lipgloss.NewStyle().Underline(true),
 		StatusBar:    lipgloss.NewStyle().Padding(0, 1),
 		StatusOK:     lipgloss.NewStyle(),
 		StatusBad:    lipgloss.NewStyle(),

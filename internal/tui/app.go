@@ -43,7 +43,7 @@ func Run(ctx context.Context) (err error) {
 	}()
 
 	model := newModel(ctx, socketPath)
-	program = tea.NewProgram(model, tea.WithAltScreen(), tea.WithContext(ctx))
+	program = tea.NewProgram(model, tea.WithAltScreen(), tea.WithContext(ctx), tea.WithMouseCellMotion())
 	if _, err = program.Run(); err != nil {
 		if errors.Is(err, context.Canceled) {
 			return nil
@@ -54,19 +54,27 @@ func Run(ctx context.Context) (err error) {
 }
 
 type model struct {
-	ctx          context.Context
-	client       *ipc.Client
-	styles       theme.Styles
-	spinner      spinner.Model
-	tabs         []string
-	activeTab    int
-	width        int
-	height       int
-	daemonState  components.DaemonState
-	status       string
-	daemonError  string
-	starting     bool
-	healthLoaded bool
+	ctx                  context.Context
+	client               *ipc.Client
+	styles               theme.Styles
+	spinner              spinner.Model
+	tabs                 []string
+	activeTab            int
+	regions              *regionRegistry
+	hoveredRegionID      string
+	hoveredTab           int
+	lastClick            lastMouseClick
+	lastMouseRegionID    string
+	lastMouseDoubleClick bool
+	lastMouseButton      tea.MouseButton
+	mouseNow             func() time.Time
+	width                int
+	height               int
+	daemonState          components.DaemonState
+	status               string
+	daemonError          string
+	starting             bool
+	healthLoaded         bool
 
 	hosts        []core.Host
 	hostLoading  bool
@@ -153,6 +161,9 @@ func newModel(ctx context.Context, socketPath string) model {
 		styles:      styles,
 		spinner:     components.NewSpinner(styles),
 		tabs:        []string{"Hosts", "Schedules", "Logs", "Settings"},
+		regions:     newRegionRegistry(),
+		hoveredTab:  -1,
+		mouseNow:    time.Now,
 		daemonState: components.DaemonChecking,
 		status:      "",
 	}
@@ -170,6 +181,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyMsg:
 		return m.handleKey(typed)
+	case tea.MouseMsg:
+		return m.handleMouse(typed)
 	case spinner.TickMsg:
 		if m.daemonState == components.DaemonChecking || m.starting {
 			var cmd tea.Cmd
@@ -357,6 +370,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) View() string {
+	if m.regions != nil {
+		m.regions.Reset()
+	}
 	if m.width == 0 || m.height == 0 {
 		return ""
 	}
@@ -368,7 +384,7 @@ func (m model) View() string {
 		return lipgloss.NewStyle().Width(m.width).Height(m.height).Render(m.renderLiveRunOverlay(m.height))
 	}
 
-	tabbar := strings.TrimSuffix(components.RenderTabBar(m.styles, components.TabBarState{Labels: m.tabs, Active: m.activeTab}), "\n")
+	tabbar := strings.TrimSuffix(m.renderTabBar(), "\n")
 	status := components.RenderStatusBar(m.styles, components.StatusBarState{
 		Keybinds: m.keybinds(),
 		Daemon:   m.daemonState,
