@@ -63,11 +63,16 @@ type model struct {
 	regions              *regionRegistry
 	hoveredRegionID      string
 	hoveredTab           int
+	hoveredHost          int
+	hoveredSchedule      int
+	hoveredRun           int
+	contextMenu          contextMenuState
 	lastClick            lastMouseClick
 	lastMouseRegionID    string
 	lastMouseDoubleClick bool
 	lastMouseButton      tea.MouseButton
 	mouseNow             func() time.Time
+	renderBodyY          int
 	width                int
 	height               int
 	daemonState          components.DaemonState
@@ -156,16 +161,19 @@ type hostRebootMsg struct {
 func newModel(ctx context.Context, socketPath string) model {
 	styles := theme.NewStyles()
 	return model{
-		ctx:         ctx,
-		client:      ipc.NewClient(socketPath),
-		styles:      styles,
-		spinner:     components.NewSpinner(styles),
-		tabs:        []string{"Hosts", "Schedules", "Logs", "Settings"},
-		regions:     newRegionRegistry(),
-		hoveredTab:  -1,
-		mouseNow:    time.Now,
-		daemonState: components.DaemonChecking,
-		status:      "",
+		ctx:             ctx,
+		client:          ipc.NewClient(socketPath),
+		styles:          styles,
+		spinner:         components.NewSpinner(styles),
+		tabs:            []string{"Hosts", "Schedules", "Logs", "Settings"},
+		regions:         newRegionRegistry(),
+		hoveredTab:      -1,
+		hoveredHost:     -1,
+		hoveredSchedule: -1,
+		hoveredRun:      -1,
+		mouseNow:        time.Now,
+		daemonState:     components.DaemonChecking,
+		status:          "",
 	}
 }
 
@@ -396,6 +404,7 @@ func (m model) View() string {
 	if bodyHeight < 1 {
 		bodyHeight = 1
 	}
+	m.renderBodyY = lipgloss.Height(tabbar)
 	bodyContent := m.renderActiveTab(bodyHeight)
 	if m.runBanner != "" && !m.liveModalVisible {
 		bodyContent = m.renderRunBanner() + "\n" + bodyContent
@@ -403,11 +412,18 @@ func (m model) View() string {
 	if m.logViewer != nil {
 		bodyContent = m.renderHistoryLogViewer(bodyHeight)
 	}
+	bodyContent = m.renderContextMenuOverlay(bodyContent, bodyHeight)
 	body := lipgloss.NewStyle().Width(m.width).Height(bodyHeight).Render(bodyContent)
 	return lipgloss.JoinVertical(lipgloss.Left, tabbar, body, status)
 }
 
 func (m model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.contextMenu.Open {
+		if key.String() == "esc" {
+			m.contextMenu = contextMenuState{}
+			return m, nil
+		}
+	}
 	if m.logViewer != nil {
 		return m.handleHistoryLogViewerKey(key)
 	}

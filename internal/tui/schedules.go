@@ -12,6 +12,7 @@ import (
 	"github.com/TheOriUHD/patchpilot/internal/core"
 	"github.com/TheOriUHD/patchpilot/internal/ipc"
 	"github.com/TheOriUHD/patchpilot/internal/scheduler"
+	"github.com/TheOriUHD/patchpilot/internal/tui/components"
 	"github.com/TheOriUHD/patchpilot/internal/tui/theme"
 )
 
@@ -104,6 +105,11 @@ func (m model) handleSchedulesKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "R":
 		if schedule, ok := m.selectedSchedule(); ok {
 			m.schedulePending = schedulePendingAction{Kind: "run", ID: schedule.ID, Name: schedule.Name}
+		}
+		return m, nil
+	case "m":
+		if _, ok := m.selectedSchedule(); ok {
+			return m.openScheduleContextMenu(m.scheduleSelected, 4, m.renderBodyY+5+m.scheduleSelected), nil
 		}
 		return m, nil
 	case "down", "j":
@@ -243,6 +249,10 @@ func (m model) renderSchedulesView(bodyHeight int) string {
 	builder.WriteString(m.styles.MutedText.Render(strings.Repeat("─", 92)))
 	builder.WriteByte('\n')
 	for index, schedule := range m.schedules {
+		rowY := m.renderBodyY + 5 + index
+		if m.regions != nil {
+			m.regions.Add(region{ID: fmt.Sprintf("schedule-row:%d", index), Rect: Rect{X: 2, Y: rowY, Width: 92, Height: 1}, Action: regionActionScheduleRow, Index: index})
+		}
 		cursor := " "
 		if index == m.scheduleSelected {
 			cursor = theme.SymbolPointer
@@ -253,9 +263,12 @@ func (m model) renderSchedulesView(bodyHeight int) string {
 			skip = "overlap"
 		}
 		line := fmt.Sprintf("%-2s %-24s %-10s %-8v %-7d %-18s %s", cursor, truncate(schedule.Name, 24), schedule.Frequency, schedule.Enabled, schedule.HostCount, truncate(next, 18), skip)
-		if index == m.scheduleSelected {
+		switch index {
+		case m.scheduleSelected:
 			builder.WriteString(m.styles.ActiveTab.Render(line))
-		} else {
+		case m.hoveredSchedule:
+			builder.WriteString(components.RenderListRow(m.styles, components.Row{Text: line, Hover: true}))
+		default:
 			builder.WriteString(line)
 		}
 		builder.WriteByte('\n')
@@ -367,7 +380,7 @@ func (m model) scheduleKeybinds() []string {
 	if m.schedulePending.Kind != "" {
 		return []string{"y confirm", "n cancel"}
 	}
-	return []string{"↑/↓ navigate", "a add", "Enter edit", "R run", "x remove", "r refresh"}
+	return []string{"↑/↓ navigate", "a add", "Enter edit", "R run", "x remove", "r refresh", "m menu"}
 }
 
 func (m model) selectedSchedule() (core.Schedule, bool) {

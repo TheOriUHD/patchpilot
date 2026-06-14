@@ -24,7 +24,7 @@ func TestConfirmPendingDismissesBeforeReturningCommand(t *testing.T) {
 	m.daemonState = components.DaemonUp
 	m.hosts = []core.Host{{ID: 42, Name: "debian", Type: core.HostTypeStandard, Enabled: true}}
 
-	updated, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}})
+	updated, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'U'}})
 	if cmd != nil {
 		t.Fatal("opening confirmation should not return command")
 	}

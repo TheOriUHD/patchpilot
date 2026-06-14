@@ -12,6 +12,7 @@ import (
 	"github.com/TheOriUHD/patchpilot/internal/core"
 	"github.com/TheOriUHD/patchpilot/internal/ipc"
 	"github.com/TheOriUHD/patchpilot/internal/stream"
+	"github.com/TheOriUHD/patchpilot/internal/tui/components"
 	"github.com/TheOriUHD/patchpilot/internal/tui/theme"
 )
 
@@ -118,6 +119,13 @@ func (m model) handleRunsKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.toggleRunTriggerFilter(core.RunTriggerCLI)
 		m.runLoading = true
 		return m, loadRunsPageCmd(m.ctx, m.client, m.runListQuery())
+	case "m":
+		if m.runTreeDetail == nil {
+			if _, ok := m.selectedRun(); ok {
+				return m.openRunContextMenu(m.runSelected, 4, m.renderBodyY+5+m.runSelected), nil
+			}
+		}
+		return m, nil
 	case "enter":
 		if m.runTreeDetail != nil {
 			return m.openSelectedHistoryHostLog()
@@ -182,6 +190,10 @@ func (m model) renderRunsView(bodyHeight int) string {
 	builder.WriteString(m.styles.MutedText.Render(strings.Repeat("─", 78)))
 	builder.WriteByte('\n')
 	for index, run := range m.runs {
+		rowY := m.renderBodyY + 5 + index
+		if m.regions != nil {
+			m.regions.Add(region{ID: fmt.Sprintf("run-row:%d", index), Rect: Rect{X: 2, Y: rowY, Width: 94, Height: 1}, Action: regionActionRunRow, Index: index})
+		}
 		cursor := " "
 		if index == m.runSelected {
 			cursor = theme.SymbolPointer
@@ -191,9 +203,12 @@ func (m model) renderRunsView(bodyHeight int) string {
 			trigger = run.ScheduleName
 		}
 		line := fmt.Sprintf("%-2s %-18s %-20s %-7d %-8s %s", cursor, run.StartedAt.Format("Jan 02 15:04"), truncate(trigger, 20), run.HostCount, formatDuration(run.DurationSeconds), runStatusIcon(run.Status)+" "+string(run.Status))
-		if index == m.runSelected {
+		switch index {
+		case m.runSelected:
 			builder.WriteString(m.styles.ActiveTab.Render(line))
-		} else {
+		case m.hoveredRun:
+			builder.WriteString(components.RenderListRow(m.styles, components.Row{Text: line, Hover: true}))
+		default:
 			builder.WriteString(line)
 		}
 		builder.WriteByte('\n')
@@ -720,7 +735,7 @@ func (m model) runKeybinds() []string {
 	if m.runTreeDetail != nil {
 		return []string{"↑/↓ host", "Enter log", "Esc list"}
 	}
-	return []string{"↑/↓ navigate", "Enter open", "f range", "S/F status", "M/A/C trigger", "o older"}
+	return []string{"↑/↓ navigate", "Enter open", "f range", "S/F status", "M/A/C trigger", "m menu", "o older"}
 }
 
 func (m model) selectedRun() (core.Run, bool) {

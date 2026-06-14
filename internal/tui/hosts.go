@@ -11,6 +11,7 @@ import (
 	"github.com/TheOriUHD/patchpilot/internal/core"
 	"github.com/TheOriUHD/patchpilot/internal/ipc"
 	"github.com/TheOriUHD/patchpilot/internal/pkgmgr"
+	"github.com/TheOriUHD/patchpilot/internal/tui/components"
 	"github.com/TheOriUHD/patchpilot/internal/tui/theme"
 )
 
@@ -118,13 +119,21 @@ func (m model) handleHostListKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.pending = pendingAction{Kind: "toggle", Host: host}
 		}
 		return m, nil
-	case "R":
+	case "u", "U":
 		if host, ok := m.selectedHost(); ok {
 			if m.hostInProgress(host.ID) {
 				m.status = "host is already being updated"
 				return m, nil
 			}
 			m.pending = pendingAction{Kind: "run", Host: host}
+		}
+		return m, nil
+	case "r", "R":
+		m.hostLoading = true
+		return m, loadHostsCmd(m.ctx, m.client)
+	case "m":
+		if _, ok := m.selectedHost(); ok {
+			return m.openHostContextMenu(m.hostSelected, 4, m.renderBodyY+5+m.hostSelected), nil
 		}
 		return m, nil
 	case "/":
@@ -328,6 +337,10 @@ func (m model) renderHostList(bodyHeight int) string {
 	builder.WriteString(m.styles.MutedText.Render(strings.Repeat("─", 78)))
 	builder.WriteByte('\n')
 	for index, host := range hosts {
+		rowY := m.renderBodyY + 5 + index
+		if m.regions != nil {
+			m.regions.Add(region{ID: fmt.Sprintf("host-row:%d", index), Rect: Rect{X: 2, Y: rowY, Width: 78, Height: 1}, Action: regionActionHostRow, Index: index})
+		}
 		cursor := " "
 		if index == m.hostSelected {
 			cursor = theme.SymbolPointer
@@ -343,14 +356,43 @@ func (m model) renderHostList(bodyHeight int) string {
 		if m.hostInProgress(host.ID) {
 			line = m.styles.MutedText.Render(line)
 		}
-		if index == m.hostSelected {
+		switch index {
+		case m.hostSelected:
 			builder.WriteString(m.styles.ActiveTab.Render(line))
-		} else {
+		case m.hoveredHost:
+			builder.WriteString(components.RenderListRow(m.styles, components.Row{Text: line, Hover: true}))
+		default:
 			builder.WriteString(line)
 		}
 		builder.WriteByte('\n')
 	}
+	builder.WriteByte('\n')
+	m.writeHostActionButtons(&builder, 2, m.renderBodyY+5+len(hosts)+1)
 	return lipgloss.NewStyle().Width(m.width).Height(bodyHeight).Padding(1, 2).Render(builder.String())
+}
+
+func (m model) writeHostActionButtons(builder *strings.Builder, startX int, y int) {
+	buttons := []struct {
+		name  string
+		label string
+	}{
+		{name: "host:add", label: "Add host (A)"},
+		{name: "host:run-selected", label: "Run selected (U)"},
+		{name: "host:refresh", label: "Refresh (R)"},
+	}
+	x := startX
+	for index, button := range buttons {
+		view := components.Button{Label: button.label}.Render(m.styles.Tab, m.styles.ActiveTab, m.styles.HoverTab, m.styles.MutedText)
+		if index > 0 {
+			builder.WriteString("   ")
+			x += 3
+		}
+		if m.regions != nil {
+			m.regions.Add(region{ID: button.name, Rect: Rect{X: x, Y: y, Width: lipgloss.Width(view), Height: 1}, Action: regionActionButton, Name: button.name})
+		}
+		builder.WriteString(view)
+		x += lipgloss.Width(view)
+	}
 }
 
 func (m model) renderHostDetail(bodyHeight int) string {
@@ -425,7 +467,7 @@ func (m model) hostKeybinds() []string {
 	if m.hostScreen == hostScreenDetail {
 		return []string{"Tab detail tab", "u update", "d dry run", "b reboot", "P repair sudoers", "n rename", "e toggle", "x remove", "q back"}
 	}
-	return []string{"↑/↓ navigate", "Enter detail", "a add", "R run host", "e toggle", "/ filter", "q quit"}
+	return []string{"↑/↓ navigate", "Enter detail", "a add", "U run host", "R refresh", "m menu", "/ filter", "q quit"}
 }
 
 func (m model) filteredHosts() []core.Host {
