@@ -100,7 +100,7 @@ func RegisterWizard(router chi.Router, service *core.HostService) {
 			}
 			token := []byte(input.APIToken)
 			defer core.ZeroBytes(token)
-			host, err := service.CommitAPIHost(req.Context(), core.APIHostCommitInput{Type: input.Type, Endpoint: input.Endpoint, APIToken: token, Name: input.Name, Notes: input.Notes, Enabled: input.Enabled})
+			host, err := service.CommitAPIHost(req.Context(), core.APIHostCommitInput{Type: input.Type, Endpoint: input.Endpoint, APIToken: token, Name: input.Name, Notes: input.Notes, Enabled: input.Enabled, AutoReboot: input.AutoReboot, AutoRebootDelay: input.AutoRebootDelay})
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
@@ -174,12 +174,14 @@ type apiHostRequest struct {
 }
 
 type apiHostCommitRequest struct {
-	Type     core.HostType `json:"host_type"`
-	Endpoint string        `json:"endpoint"`
-	APIToken string        `json:"api_token"`
-	Name     string        `json:"name"`
-	Notes    string        `json:"notes"`
-	Enabled  bool          `json:"enabled"`
+	Type            core.HostType `json:"host_type"`
+	Endpoint        string        `json:"endpoint"`
+	APIToken        string        `json:"api_token"`
+	Name            string        `json:"name"`
+	Notes           string        `json:"notes"`
+	Enabled         bool          `json:"enabled"`
+	AutoReboot      bool          `json:"auto_reboot"`
+	AutoRebootDelay int           `json:"auto_reboot_countdown_seconds"`
 }
 
 func serveSSE(ctx context.Context, w http.ResponseWriter, events <-chan stream.Event) {

@@ -40,7 +40,7 @@ func RequiredCommands(manager PackageManager) ([]string, error) {
 	case ManagerAPT, ManagerAPTProxmox:
 		return []string{"apt-get", "apt", "dpkg", "test"}, nil
 	case ManagerDNF:
-		return []string{"dnf", "test"}, nil
+		return []string{"dnf", "needs-restarting", "test"}, nil
 	case ManagerPacman:
 		return []string{"pacman", "test"}, nil
 	case ManagerZypper:
@@ -110,15 +110,15 @@ func VerifyCommand(manager PackageManager, paths map[string]string) (string, err
 func RebootRequiredCommand(manager PackageManager, paths map[string]string) (string, error) {
 	switch manager {
 	case ManagerAPT, ManagerAPTProxmox:
-		return fmt.Sprintf("sudo -n %s -f /var/run/reboot-required", paths["test"]), nil
+		return fmt.Sprintf("sudo -n %s -f /var/run/reboot-required && exit 0; if command -v needrestart >/dev/null 2>&1; then needrestart -b -r l 2>/dev/null | grep -Eq 'NEEDRESTART-KSTA: [^1]'; else exit 1; fi", paths["test"]), nil
 	case ManagerDNF:
-		return fmt.Sprintf("sudo -n %s -q needs-restarting -r; code=$?; test \"$code\" -eq 1", paths["dnf"]), nil
+		return fmt.Sprintf("sudo -n %s -r >/dev/null 2>&1; code=$?; test \"$code\" -eq 1", paths["needs-restarting"]), nil
 	case ManagerPacman:
 		return fmt.Sprintf("running=$(uname -r); installed=$(sudo -n %s -Q linux 2>/dev/null | awk '{print $2}'); test -n \"$installed\" && case \"$running\" in $installed*) exit 1;; *) exit 0;; esac", paths["pacman"]), nil
 	case ManagerZypper:
 		return fmt.Sprintf("running=$(uname -r); installed=$(sudo -n %s -n search -si kernel-default 2>/dev/null | awk '/^Version/ {print $3; exit}'); test -n \"$installed\" && case \"$running\" in $installed*) exit 1;; *) exit 0;; esac", paths["zypper"]), nil
 	case ManagerAPK:
-		return fmt.Sprintf("running=$(uname -r); installed=$(sudo -n %s info -v 'linux-*' 2>/dev/null | head -n 1 | sed 's/^[^-]*-//'); test -n \"$installed\" && case \"$running\" in $installed*) exit 1;; *) exit 0;; esac", paths["apk"]), nil
+		return fmt.Sprintf("test -f /var/run/reboot-required && exit 0; running=$(uname -r); installed=$(sudo -n %s info -v 'linux-*' 2>/dev/null | head -n 1 | sed 's/^[^-]*-//'); test -n \"$installed\" && case \"$running\" in $installed*) exit 1;; *) exit 0;; esac", paths["apk"]), nil
 	default:
 		return "", fmt.Errorf("unsupported package manager %q", manager)
 	}

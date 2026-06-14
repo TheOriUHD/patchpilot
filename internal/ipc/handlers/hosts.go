@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -40,6 +41,9 @@ func RegisterHosts(router chi.Router, service *core.HostService, orchestrator *c
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
+			if rejectHostMutationWhenInFlight(req.Context(), w, orchestrator, id, "cannot update host while update is in progress") {
+				return
+			}
 			var input core.HostUpdate
 			if err := readJSON(req, &input); err != nil {
 				writeError(w, http.StatusBadRequest, err)
@@ -60,6 +64,9 @@ func RegisterHosts(router chi.Router, service *core.HostService, orchestrator *c
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
+			if rejectHostMutationWhenInFlight(req.Context(), w, orchestrator, id, "cannot toggle host while update is in progress") {
+				return
+			}
 			host, err := service.Hosts.Get(req.Context(), id)
 			if err != nil {
 				writeError(w, http.StatusNotFound, err)
@@ -78,6 +85,9 @@ func RegisterHosts(router chi.Router, service *core.HostService, orchestrator *c
 			id, err := idParam(req, "id")
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			if rejectHostMutationWhenInFlight(req.Context(), w, orchestrator, id, "cannot remove host while update is in progress") {
 				return
 			}
 			if err := service.Hosts.Delete(req.Context(), id); err != nil {
@@ -115,7 +125,36 @@ func RegisterHosts(router chi.Router, service *core.HostService, orchestrator *c
 			}
 			writeJSON(w, http.StatusAccepted, detail)
 		})
+
+		r.Post("/{id}/reboot", func(w http.ResponseWriter, req *http.Request) {
+			id, err := idParam(req, "id")
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			if err := service.RebootHost(req.Context(), id); err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		})
 	})
+}
+
+func rejectHostMutationWhenInFlight(ctx context.Context, w http.ResponseWriter, orchestrator *core.Orchestrator, hostID int64, message string) bool {
+	if orchestrator == nil {
+		return false
+	}
+	inFlight, err := orchestrator.HostInFlight(ctx, hostID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return true
+	}
+	if inFlight {
+		writeError(w, http.StatusConflict, errors.New(message))
+		return true
+	}
+	return false
 }
 
 func serviceAudit(service *core.HostService, ctx context.Context, actor string, action string, targetType string, targetID *int64) {

@@ -173,7 +173,7 @@ func ResolveSourceIP(ctx context.Context, hostname string, port int) (string, er
 	if err != nil {
 		return "", fmt.Errorf("resolve source ip: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	addr, ok := conn.LocalAddr().(*net.UDPAddr)
 	if !ok || addr.IP == nil {
 		return "", fmt.Errorf("resolve source ip: unexpected local address %s", conn.LocalAddr())
@@ -182,30 +182,147 @@ func ResolveSourceIP(ctx context.Context, hostname string, port int) (string, er
 }
 
 func resolveCommandPaths(ctx context.Context, runner remotessh.Runner, reporter BootstrapReporter, facts HostFacts, manager pkgmgr.PackageManager, password []byte) (map[string]string, error) {
-	reporter = nonNilReporter(reporter)
 	required, err := pkgmgr.RequiredCommands(manager)
 	if err != nil {
 		return nil, err
 	}
-	paths := make(map[string]string, len(required))
+	return resolveRequiredCommandPaths(ctx, runner, reporter, facts, password, required)
+}
+
+func resolveRequiredCommandPaths(ctx context.Context, runner remotessh.Runner, reporter BootstrapReporter, facts HostFacts, password []byte, required []string) (map[string]string, error) {
+	reporter = nonNilReporter(reporter)
 	for _, name := range required {
-		step := "Resolving command path: " + name
-		reporter.Report(BootstrapEvent{Step: step, Status: BootstrapStepRunning, Message: "Running command -v " + name})
-		command, input := escalate(facts, "command -v "+shellQuote(name), password)
-		result, err := runner.Run(ctx, command, input)
-		if err != nil {
-			reporter.Report(BootstrapEvent{Step: step, Status: BootstrapStepFailed, Message: strings.TrimSpace(result.Stderr + result.Stdout)})
-			return nil, fmt.Errorf("resolve command path %s: %w", name, err)
+		reporter.Report(BootstrapEvent{Step: commandPathStep(name), Status: BootstrapStepRunning, Message: "Resolving with command -v -p, which, and canonical paths"})
+	}
+
+	command, input := escalate(facts, commandPathResolutionScript(required), password)
+	result, runErr := runner.Run(ctx, command, input)
+	paths, parseErr := parseResolvedCommandPaths(result.Stdout, required)
+	if runErr != nil {
+		missing := missingCommandFromResolverOutput(result.Stderr)
+		if missing == "" && parseErr != nil {
+			missing = firstMissingRequired(required, paths)
 		}
-		path := firstLine(result.Stdout)
-		if !strings.HasPrefix(path, "/") {
-			reporter.Report(BootstrapEvent{Step: step, Status: BootstrapStepFailed, Message: "command did not resolve to an absolute path"})
-			return nil, fmt.Errorf("command %s resolved to non-absolute path %q", name, path)
+		message := strings.TrimSpace(result.Stderr + "\n" + result.Stdout)
+		if missing != "" {
+			message = fmt.Sprintf("command %s could not be resolved to an executable absolute path", missing)
+			reporter.Report(BootstrapEvent{Step: commandPathStep(missing), Status: BootstrapStepFailed, Message: message})
+			return nil, fmt.Errorf("resolve command path %s: %s", missing, message)
 		}
-		paths[name] = path
-		reporter.Report(BootstrapEvent{Step: step, Status: BootstrapStepSuccess, Message: path})
+		if message == "" {
+			message = runErr.Error()
+		}
+		reporter.Report(BootstrapEvent{Step: "Resolving command paths", Status: BootstrapStepFailed, Message: message})
+		return nil, fmt.Errorf("resolve command paths: %w", runErr)
+	}
+	if parseErr != nil {
+		missing := firstMissingRequired(required, paths)
+		if missing != "" {
+			reporter.Report(BootstrapEvent{Step: commandPathStep(missing), Status: BootstrapStepFailed, Message: parseErr.Error()})
+		} else {
+			reporter.Report(BootstrapEvent{Step: "Resolving command paths", Status: BootstrapStepFailed, Message: parseErr.Error()})
+		}
+		return nil, parseErr
+	}
+	for _, name := range required {
+		reporter.Report(BootstrapEvent{Step: commandPathStep(name), Status: BootstrapStepSuccess, Message: paths[name]})
 	}
 	return paths, nil
+}
+
+func commandPathResolutionScript(required []string) string {
+	var builder strings.Builder
+	builder.WriteString(`resolve_patchpilot_command() {
+	name=$1
+	resolved=
+	candidate=$(command -v -p "$name" 2>/dev/null || true)
+	case "$candidate" in
+		/*) resolved=$candidate ;;
+	esac
+	if [ -z "$resolved" ]; then
+		candidate=$(which "$name" 2>/dev/null || true)
+		case "$candidate" in
+			/*) resolved=$candidate ;;
+		esac
+	fi
+	if [ -z "$resolved" ]; then
+		for prefix in /usr/bin /bin /usr/sbin /sbin; do
+			candidate=$prefix/$name
+			if test -x "$candidate"; then
+				resolved=$candidate
+				break
+			fi
+		done
+	fi
+	if [ -z "$resolved" ]; then
+		printf 'missing command: %s\n' "$name" >&2
+		return 1
+	fi
+	printf '%s\t%s\n' "$name" "$resolved"
+}
+status=0
+`)
+	for _, name := range required {
+		builder.WriteString("resolve_patchpilot_command ")
+		builder.WriteString(shellQuote(name))
+		builder.WriteString(" || status=1\n")
+	}
+	builder.WriteString("exit \"$status\"\n")
+	return builder.String()
+}
+
+func parseResolvedCommandPaths(output string, required []string) (map[string]string, error) {
+	paths := make(map[string]string, len(required))
+	requiredSet := make(map[string]struct{}, len(required))
+	for _, name := range required {
+		requiredSet[name] = struct{}{}
+	}
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		name, path, ok := strings.Cut(line, "\t")
+		if !ok {
+			return paths, fmt.Errorf("parse resolved command path line %q", line)
+		}
+		name = strings.TrimSpace(name)
+		path = strings.TrimSpace(path)
+		if _, ok := requiredSet[name]; !ok {
+			continue
+		}
+		if !strings.HasPrefix(path, "/") {
+			return paths, fmt.Errorf("command %s resolved to non-absolute path %q", name, path)
+		}
+		paths[name] = path
+	}
+	if missing := firstMissingRequired(required, paths); missing != "" {
+		return paths, fmt.Errorf("command %s could not be resolved to an executable absolute path", missing)
+	}
+	return paths, nil
+}
+
+func missingCommandFromResolverOutput(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "missing command: ") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "missing command: "))
+		}
+	}
+	return ""
+}
+
+func firstMissingRequired(required []string, paths map[string]string) string {
+	for _, name := range required {
+		if paths[name] == "" {
+			return name
+		}
+	}
+	return ""
+}
+
+func commandPathStep(name string) string {
+	return "Resolving command path: " + name
 }
 
 func runStep(ctx context.Context, runner remotessh.Runner, reporter BootstrapReporter, step string, message string, command string, input []byte) error {
@@ -250,16 +367,6 @@ func hardenedAuthorizedKey(publicKey string, sourceIP string) string {
 
 func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
-}
-
-func firstLine(value string) string {
-	for _, line := range strings.Split(value, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed != "" {
-			return trimmed
-		}
-	}
-	return ""
 }
 
 func mustSudoers(manager pkgmgr.PackageManager, paths map[string]string) string {

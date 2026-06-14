@@ -17,11 +17,17 @@ type Server struct {
 	socketPath string
 	handler    http.Handler
 	logger     *slog.Logger
+	ready      func() error
 }
 
 // NewServer creates a Unix-socket HTTP API server.
 func NewServer(socketPath string, handler http.Handler, logger *slog.Logger) *Server {
 	return &Server{socketPath: socketPath, handler: handler, logger: logger}
+}
+
+// SetReadyFunc installs a callback invoked after the IPC listener is active.
+func (s *Server) SetReadyFunc(ready func() error) {
+	s.ready = ready
 }
 
 // Serve starts the server and blocks until the context is canceled or serving fails.
@@ -38,6 +44,9 @@ func (s *Server) Serve(ctx context.Context) error {
 		_ = listener.Close()
 		_ = os.Remove(s.socketPath)
 	}()
+	if err := os.Chmod(s.socketPath, 0o660); err != nil {
+		return fmt.Errorf("set socket permissions on %s: %w", s.socketPath, err)
+	}
 
 	server := &http.Server{
 		Handler:           s.handler,
@@ -50,6 +59,12 @@ func (s *Server) Serve(ctx context.Context) error {
 	}()
 
 	s.logger.Info("daemon ipc server listening", "socket", s.socketPath)
+	if s.ready != nil {
+		if err := s.ready(); err != nil {
+			_ = server.Close()
+			return fmt.Errorf("notify daemon readiness: %w", err)
+		}
+	}
 
 	select {
 	case <-ctx.Done():

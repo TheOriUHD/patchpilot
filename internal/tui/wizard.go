@@ -38,6 +38,8 @@ type standardWizard struct {
 	name         string
 	notes        string
 	enabled      bool
+	autoReboot   bool
+	rebootDelay  int
 	facts        core.HostFacts
 	diagnosis    *core.PermissionDiagnosis
 	refusal      string
@@ -69,7 +71,7 @@ type bootstrapEventMsg struct {
 }
 
 func newStandardWizard() standardWizard {
-	return standardWizard{step: wizardStepInput, enabled: true}
+	return standardWizard{step: wizardStepInput, enabled: true, rebootDelay: 30}
 }
 
 func (m model) handleWizardKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -205,10 +207,10 @@ func (m model) handleWizardDiagnoseKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m model) handleWizardReviewKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch key.String() {
 	case "tab", "down":
-		m.wizard.focus = (m.wizard.focus + 1) % 3
+		m.wizard.focus = (m.wizard.focus + 1) % 5
 		return m, nil
 	case "shift+tab", "up":
-		m.wizard.focus = (m.wizard.focus + 2) % 3
+		m.wizard.focus = (m.wizard.focus + 4) % 5
 		return m, nil
 	case "backspace":
 		if m.wizard.focus == 0 && len(m.wizard.name) > 0 {
@@ -221,6 +223,19 @@ func (m model) handleWizardReviewKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case " ":
 		if m.wizard.focus == 2 {
 			m.wizard.enabled = !m.wizard.enabled
+		}
+		if m.wizard.focus == 3 {
+			m.wizard.autoReboot = !m.wizard.autoReboot
+		}
+		return m, nil
+	case "left", "h":
+		if m.wizard.focus == 4 {
+			m.wizard.rebootDelay = core.NormalizeRebootDelay(m.wizard.rebootDelay - 5)
+		}
+		return m, nil
+	case "right", "l":
+		if m.wizard.focus == 4 {
+			m.wizard.rebootDelay = core.NormalizeRebootDelay(m.wizard.rebootDelay + 5)
 		}
 		return m, nil
 	case "enter":
@@ -596,8 +611,31 @@ func (m model) renderWizardReview() string {
 	} else {
 		builder.WriteString(check)
 	}
-	builder.WriteString(fmt.Sprintf("\n\nDry run: %s\n", summary.DryRun.Summary))
-	builder.WriteString("\nEnter Save   Space toggle enabled   Esc cancel")
+	builder.WriteString("\n\nReboot policy:\n")
+	reportOnly := "( ) Report only"
+	auto := "( ) Auto-reboot after successful update"
+	if m.wizard.autoReboot {
+		auto = "(*) Auto-reboot after successful update"
+	} else {
+		reportOnly = "(*) Report only"
+	}
+	policy := reportOnly + "  " + auto
+	if m.wizard.focus == 3 {
+		builder.WriteString(m.styles.ActiveTab.Render(policy))
+	} else {
+		builder.WriteString(policy)
+	}
+	builder.WriteByte('\n')
+	countdown := fmt.Sprintf("Countdown: [ %d ] seconds", core.NormalizeRebootDelay(m.wizard.rebootDelay))
+	if m.wizard.focus == 4 && m.wizard.autoReboot {
+		builder.WriteString(m.styles.ActiveTab.Render(countdown))
+	} else if m.wizard.autoReboot {
+		builder.WriteString(countdown)
+	} else {
+		builder.WriteString(m.styles.MutedText.Render(countdown))
+	}
+	fmt.Fprintf(&builder, "\n\nDry run: %s\n", summary.DryRun.Summary)
+	builder.WriteString("\nEnter Save   Space toggle   ←/→ countdown   Esc cancel")
 	return m.styles.Card.Width(78).Render(builder.String())
 }
 
@@ -643,6 +681,12 @@ func (m model) renderAPIWizardReview() string {
 		builder.WriteString(m.styles.ActiveTab.Render(check))
 	} else {
 		builder.WriteString(check)
+	}
+	builder.WriteString("\nReboot policy: ")
+	if m.wizard.autoReboot {
+		fmt.Fprintf(&builder, "auto-reboot (%ds)", core.NormalizeRebootDelay(m.wizard.rebootDelay))
+	} else {
+		builder.WriteString("report only")
 	}
 	builder.WriteString("\n\nEnter Save   Space toggle enabled   Esc cancel")
 	return m.styles.Card.Width(82).Render(builder.String())
@@ -804,7 +848,7 @@ func nextBootstrapEventCmd(events <-chan stream.Event, errors <-chan error) tea.
 }
 
 func commitBootstrapCmd(ctx context.Context, client *ipc.Client, wizard standardWizard) tea.Cmd {
-	input := core.CommitHostInput{SessionID: wizard.sessionID, Name: strings.TrimSpace(wizard.name), Notes: wizard.notes, Enabled: wizard.enabled}
+	input := core.CommitHostInput{SessionID: wizard.sessionID, Name: strings.TrimSpace(wizard.name), Notes: wizard.notes, Enabled: wizard.enabled, AutoReboot: wizard.autoReboot, AutoRebootDelay: core.NormalizeRebootDelay(wizard.rebootDelay)}
 	return func() tea.Msg {
 		requestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
@@ -814,7 +858,7 @@ func commitBootstrapCmd(ctx context.Context, client *ipc.Client, wizard standard
 }
 
 func commitAPIHostCmd(ctx context.Context, client *ipc.Client, wizard standardWizard) tea.Cmd {
-	input := core.APIHostCommitInput{Type: wizard.selectedAPIHostType(), Endpoint: strings.TrimSpace(wizard.hostname), APIToken: append([]byte{}, wizard.password...), Name: strings.TrimSpace(wizard.name), Notes: wizard.notes, Enabled: wizard.enabled}
+	input := core.APIHostCommitInput{Type: wizard.selectedAPIHostType(), Endpoint: strings.TrimSpace(wizard.hostname), APIToken: append([]byte{}, wizard.password...), Name: strings.TrimSpace(wizard.name), Notes: wizard.notes, Enabled: wizard.enabled, AutoReboot: wizard.autoReboot, AutoRebootDelay: core.NormalizeRebootDelay(wizard.rebootDelay)}
 	return func() tea.Msg {
 		defer core.ZeroBytes(input.APIToken)
 		requestCtx, cancel := context.WithTimeout(ctx, 45*time.Second)

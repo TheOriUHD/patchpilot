@@ -98,6 +98,11 @@ func (c *Client) DryRunHost(ctx context.Context, id int64) (pkgmgr.DryRunResult,
 	return result, nil
 }
 
+// RebootHost asks the daemon to reboot a managed host.
+func (c *Client) RebootHost(ctx context.Context, id int64) error {
+	return c.doJSON(ctx, http.MethodPost, fmt.Sprintf("/api/hosts/%d/reboot", id), nil, nil)
+}
+
 // RunHostNow starts a manual single-host run.
 func (c *Client) RunHostNow(ctx context.Context, id int64) (int64, error) {
 	detail, err := c.RunHostNowDetail(ctx, id)
@@ -306,7 +311,7 @@ func (c *Client) CheckAPIHost(ctx context.Context, input core.APIHostVerifyInput
 // CommitAPIHost saves a verified native API host to inventory.
 func (c *Client) CommitAPIHost(ctx context.Context, input core.APIHostCommitInput) (core.Host, error) {
 	var host core.Host
-	body := map[string]any{"host_type": input.Type, "endpoint": input.Endpoint, "api_token": string(input.APIToken), "name": input.Name, "notes": input.Notes, "enabled": input.Enabled}
+	body := map[string]any{"host_type": input.Type, "endpoint": input.Endpoint, "api_token": string(input.APIToken), "name": input.Name, "notes": input.Notes, "enabled": input.Enabled, "auto_reboot": input.AutoReboot, "auto_reboot_countdown_seconds": input.AutoRebootDelay}
 	if err := c.doJSON(ctx, http.MethodPost, "/api/wizard/api/commit", body, &host); err != nil {
 		return core.Host{}, err
 	}
@@ -354,7 +359,7 @@ func (c *Client) events(ctx context.Context, path string) (<-chan stream.Event, 
 			errors <- fmt.Errorf("connect to stream: %w", err)
 			return
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
 			errors <- fmt.Errorf("stream returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
@@ -393,7 +398,7 @@ func (c *Client) doJSON(ctx context.Context, method string, path string, input a
 	if err != nil {
 		return fmt.Errorf("connect to daemon at %s: %w", c.socketPath, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= http.StatusBadRequest {
 		var errorBody struct {

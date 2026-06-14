@@ -40,14 +40,22 @@ func (s *KeyStore) Ensure(ctx context.Context) (KeyPair, error) {
 		return KeyPair{}, fmt.Errorf("create ssh key directory: %w", err)
 	}
 
-	privatePath := filepath.Join(s.dir, "patchpilot_ed25519")
+	privatePath := s.privatePath()
 	publicPath := privatePath + ".pub"
 	if _, err := os.Stat(privatePath); err != nil {
 		if !os.IsNotExist(err) {
 			return KeyPair{}, fmt.Errorf("inspect private key: %w", err)
 		}
-		if err := generateKeypair(privatePath, publicPath); err != nil {
+		if err := s.adoptLegacyKey(privatePath, publicPath); err != nil {
 			return KeyPair{}, err
+		}
+		if _, err := os.Stat(privatePath); err != nil {
+			if !os.IsNotExist(err) {
+				return KeyPair{}, fmt.Errorf("inspect adopted private key: %w", err)
+			}
+			if err := generateKeypair(privatePath, publicPath); err != nil {
+				return KeyPair{}, err
+			}
 		}
 	}
 
@@ -61,7 +69,13 @@ func (s *KeyStore) Ensure(ctx context.Context) (KeyPair, error) {
 	}
 	publicRaw, err := os.ReadFile(publicPath)
 	if err != nil {
-		return KeyPair{}, fmt.Errorf("read public key: %w", err)
+		if !os.IsNotExist(err) {
+			return KeyPair{}, fmt.Errorf("read public key: %w", err)
+		}
+		publicRaw = xssh.MarshalAuthorizedKey(signer.PublicKey())
+		if err := os.WriteFile(publicPath, publicRaw, 0o644); err != nil {
+			return KeyPair{}, fmt.Errorf("write public key: %w", err)
+		}
 	}
 
 	return KeyPair{PrivatePath: privatePath, PublicPath: publicPath, PrivatePEM: append([]byte(nil), privateRaw...), PublicKey: string(publicRaw), Signer: signer}, nil
@@ -97,7 +111,7 @@ func (s *KeyStore) Replace(ctx context.Context, keypair KeyPair) (KeyPair, error
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
 		return KeyPair{}, fmt.Errorf("create ssh key directory: %w", err)
 	}
-	privatePath := filepath.Join(s.dir, "patchpilot_ed25519")
+	privatePath := s.privatePath()
 	publicPath := privatePath + ".pub"
 	if err := os.WriteFile(privatePath, keypair.PrivatePEM, 0o600); err != nil {
 		return KeyPair{}, fmt.Errorf("write private key: %w", err)
@@ -106,6 +120,43 @@ func (s *KeyStore) Replace(ctx context.Context, keypair KeyPair) (KeyPair, error
 		return KeyPair{}, fmt.Errorf("write public key: %w", err)
 	}
 	return s.Ensure(ctx)
+}
+
+func (s *KeyStore) privatePath() string {
+	return filepath.Join(s.dir, "id_ed25519")
+}
+
+func (s *KeyStore) adoptLegacyKey(privatePath string, publicPath string) error {
+	legacy := []string{
+		filepath.Join(s.dir, "patchpilot_ed25519"),
+		filepath.Join(filepath.Dir(s.dir), "patchpilot_ed25519"),
+	}
+	for _, oldPrivatePath := range legacy {
+		if oldPrivatePath == privatePath {
+			continue
+		}
+		if _, err := os.Stat(oldPrivatePath); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("inspect legacy private key: %w", err)
+		}
+		privateRaw, err := os.ReadFile(oldPrivatePath)
+		if err != nil {
+			return fmt.Errorf("read legacy private key: %w", err)
+		}
+		if err := os.WriteFile(privatePath, privateRaw, 0o600); err != nil {
+			return fmt.Errorf("adopt legacy private key: %w", err)
+		}
+		oldPublicPath := oldPrivatePath + ".pub"
+		if publicRaw, err := os.ReadFile(oldPublicPath); err == nil {
+			if err := os.WriteFile(publicPath, publicRaw, 0o644); err != nil {
+				return fmt.Errorf("adopt legacy public key: %w", err)
+			}
+		}
+		return nil
+	}
+	return nil
 }
 
 func generateKeypair(privatePath string, publicPath string) error {

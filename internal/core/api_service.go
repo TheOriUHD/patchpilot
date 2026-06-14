@@ -31,12 +31,14 @@ type APIHostVerifyInput struct {
 
 // APIHostCommitInput saves an API-managed host.
 type APIHostCommitInput struct {
-	Type     HostType `json:"host_type"`
-	Endpoint string   `json:"endpoint"`
-	APIToken []byte   `json:"-"`
-	Name     string   `json:"name"`
-	Notes    string   `json:"notes"`
-	Enabled  bool     `json:"enabled"`
+	Type            HostType `json:"host_type"`
+	Endpoint        string   `json:"endpoint"`
+	APIToken        []byte   `json:"-"`
+	Name            string   `json:"name"`
+	Notes           string   `json:"notes"`
+	Enabled         bool     `json:"enabled"`
+	AutoReboot      bool     `json:"auto_reboot"`
+	AutoRebootDelay int      `json:"auto_reboot_countdown_seconds"`
 }
 
 // APIComponentStatus describes one HAOS component in the wizard review.
@@ -171,6 +173,8 @@ func (s *HostService) CommitAPIHost(ctx context.Context, input APIHostCommitInpu
 		PackageManager:     apiPackageManager(input.Type),
 		OSPretty:           apiOSPretty(input.Type, verify.Version),
 		Enabled:            input.Enabled,
+		AutoReboot:         input.AutoReboot,
+		AutoRebootDelay:    NormalizeRebootDelay(input.AutoRebootDelay),
 		Notes:              input.Notes,
 		APITokenCiphertext: ciphertext,
 		APITokenNonce:      nonce,

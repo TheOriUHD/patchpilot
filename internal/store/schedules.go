@@ -166,7 +166,7 @@ func (r *ScheduleRepository) hostIDs(ctx context.Context, scheduleID int64) ([]i
 	if err != nil {
 		return nil, fmt.Errorf("list schedule hosts: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	ids := make([]int64, 0)
 	for rows.Next() {
 		var id int64

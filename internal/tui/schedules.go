@@ -29,6 +29,12 @@ type scheduleEditor struct {
 	hostCursor int
 }
 
+type schedulePendingAction struct {
+	Kind string
+	ID   int64
+	Name string
+}
+
 type schedulesLoadedMsg struct {
 	schedules []core.Schedule
 	err       error
@@ -42,6 +48,23 @@ type scheduleMutationMsg struct {
 func (m model) handleSchedulesKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.scheduleScreen == scheduleScreenEditor {
 		return m.handleScheduleEditorKey(key)
+	}
+	if m.schedulePending.Kind != "" {
+		switch key.String() {
+		case "y", "enter":
+			action := m.schedulePending
+			m.schedulePending = schedulePendingAction{}
+			if action.Kind == "delete" {
+				return m, deleteScheduleCmd(m.ctx, m.client, action.ID)
+			}
+			if action.Kind == "run" {
+				return m, runScheduleCmd(m.ctx, m.client, action.ID)
+			}
+		case "n", "esc":
+			m.schedulePending = schedulePendingAction{}
+			m.status = "Cancelled"
+		}
+		return m, nil
 	}
 	switch key.String() {
 	case "q", "ctrl+c":
@@ -75,12 +98,12 @@ func (m model) handleSchedulesKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "x":
 		if schedule, ok := m.selectedSchedule(); ok {
-			return m, deleteScheduleCmd(m.ctx, m.client, schedule.ID)
+			m.schedulePending = schedulePendingAction{Kind: "delete", ID: schedule.ID, Name: schedule.Name}
 		}
 		return m, nil
 	case "R":
 		if schedule, ok := m.selectedSchedule(); ok {
-			return m, runScheduleCmd(m.ctx, m.client, schedule.ID)
+			m.schedulePending = schedulePendingAction{Kind: "run", ID: schedule.ID, Name: schedule.Name}
 		}
 		return m, nil
 	case "down", "j":
@@ -183,9 +206,10 @@ func (m *model) adjustScheduleField(delta int) {
 	case "Minute":
 		m.scheduleEditor.input.Minute = clamp(m.scheduleEditor.input.Minute+delta, 0, 59)
 	case "Day":
-		if m.scheduleEditor.input.Frequency == core.FrequencyWeekly {
+		switch m.scheduleEditor.input.Frequency {
+		case core.FrequencyWeekly:
 			m.scheduleEditor.input.DayOfWeek = clamp(m.scheduleEditor.input.DayOfWeek+delta, 0, 6)
-		} else if m.scheduleEditor.input.Frequency == core.FrequencyMonthly {
+		case core.FrequencyMonthly:
 			m.scheduleEditor.input.DayOfMonth = clamp(m.scheduleEditor.input.DayOfMonth+delta, 1, 28)
 		}
 	case "Enabled":
@@ -215,7 +239,7 @@ func (m model) renderSchedulesView(bodyHeight int) string {
 	var builder strings.Builder
 	builder.WriteString(m.styles.CardTitle.Render("Schedules"))
 	builder.WriteString("\n\n")
-	builder.WriteString(fmt.Sprintf("%-2s %-24s %-10s %-8s %-7s %-18s %s\n", "", "Name", "Freq", "Enabled", "Hosts", "Next", "Last skip"))
+	fmt.Fprintf(&builder, "%-2s %-24s %-10s %-8s %-7s %-18s %s\n", "", "Name", "Freq", "Enabled", "Hosts", "Next", "Last skip")
 	builder.WriteString(m.styles.MutedText.Render(strings.Repeat("─", 92)))
 	builder.WriteByte('\n')
 	for index, schedule := range m.schedules {
@@ -251,7 +275,22 @@ func (m model) renderSchedulesView(bodyHeight int) string {
 			builder.WriteString(strings.Join(parts, "  "))
 		}
 	}
-	return lipgloss.NewStyle().Width(m.width).Height(bodyHeight).Padding(1, 2).Render(builder.String())
+	content := lipgloss.NewStyle().Width(m.width).Height(bodyHeight).Padding(1, 2).Render(builder.String())
+	if m.schedulePending.Kind != "" {
+		content = lipgloss.JoinVertical(lipgloss.Center, content, m.renderScheduleConfirm())
+	}
+	return content
+}
+
+func (m model) renderScheduleConfirm() string {
+	message := "Confirm? y/n"
+	if m.schedulePending.Kind == "delete" {
+		message = fmt.Sprintf("Delete schedule %s? y/n", m.schedulePending.Name)
+	}
+	if m.schedulePending.Kind == "run" {
+		message = fmt.Sprintf("Run schedule %s now? y/n", m.schedulePending.Name)
+	}
+	return m.styles.Card.Width(72).Render(message)
 }
 
 func (m model) renderScheduleEditor(bodyHeight int) string {
@@ -302,7 +341,7 @@ func (m model) renderScheduleEditor(bodyHeight int) string {
 			if hasID(input.HostIDs, host.ID) {
 				checked = "[x]"
 			}
-			builder.WriteString(fmt.Sprintf("%s %s %-24s %s\n", cursor, checked, truncate(host.Name, 24), host.PackageManager))
+			fmt.Fprintf(&builder, "%s %s %-24s %s\n", cursor, checked, truncate(host.Name, 24), host.PackageManager)
 		}
 	}
 	builder.WriteString("\n")
@@ -324,6 +363,9 @@ func (m model) renderScheduleEditor(bodyHeight int) string {
 func (m model) scheduleKeybinds() []string {
 	if m.scheduleScreen == scheduleScreenEditor {
 		return []string{"Tab field", "←/→ change", "Space host", "s save", "Esc cancel"}
+	}
+	if m.schedulePending.Kind != "" {
+		return []string{"y confirm", "n cancel"}
 	}
 	return []string{"↑/↓ navigate", "a add", "Enter edit", "R run", "x remove", "r refresh"}
 }

@@ -54,6 +54,38 @@ func TestCommandGeneration(t *testing.T) {
 	}
 }
 
+func TestRebootRequiredCommand(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		manager PackageManager
+		paths   map[string]string
+		wants   []string
+	}{
+		{"apt", ManagerAPT, map[string]string{"test": "/usr/bin/test"}, []string{"/var/run/reboot-required", "needrestart"}},
+		{"dnf", ManagerDNF, map[string]string{"dnf": "/usr/bin/dnf", "needs-restarting": "/usr/bin/needs-restarting"}, []string{"/usr/bin/needs-restarting -r", "test \"$code\" -eq 1"}},
+		{"pacman", ManagerPacman, map[string]string{"pacman": "/usr/bin/pacman"}, []string{"uname -r", "pacman", "-Q linux"}},
+		{"apk", ManagerAPK, map[string]string{"apk": "/sbin/apk"}, []string{"/var/run/reboot-required", "uname -r", "info -v 'linux-*'"}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			command, err := RebootRequiredCommand(test.manager, test.paths)
+			if err != nil {
+				t.Fatalf("RebootRequiredCommand() error: %v", err)
+			}
+			for _, want := range test.wants {
+				if !strings.Contains(command, want) {
+					t.Fatalf("RebootRequiredCommand() = %q, want substring %q", command, want)
+				}
+			}
+		})
+	}
+}
+
 func TestParseDryRunOutput(t *testing.T) {
 	t.Parallel()
 

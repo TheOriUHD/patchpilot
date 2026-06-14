@@ -152,7 +152,7 @@ func loadOrCreateKey(path string) ([]byte, error) {
 		}
 		return nil, fmt.Errorf("create secret key %s: %w", path, err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	if _, err := file.Write(key); err != nil {
 		return nil, fmt.Errorf("write secret key %s: %w", path, err)
 	}

@@ -11,19 +11,21 @@ type InventoryBackup struct {
 
 // InventoryHost is a host backup record with API tokens excluded.
 type InventoryHost struct {
-	ID             int64    `yaml:"id" json:"id"`
-	Name           string   `yaml:"name" json:"name"`
-	Hostname       string   `yaml:"hostname" json:"hostname"`
-	SSHPort        int      `yaml:"ssh_port" json:"ssh_port"`
-	SSHUser        string   `yaml:"ssh_user" json:"ssh_user"`
-	Type           HostType `yaml:"host_type" json:"host_type"`
-	PackageManager string   `yaml:"package_manager" json:"package_manager"`
-	OSPretty       string   `yaml:"os_pretty" json:"os_pretty"`
-	Arch           string   `yaml:"arch" json:"arch"`
-	IsProxmoxHost  bool     `yaml:"is_proxmox_host" json:"is_proxmox_host"`
-	IsSelf         bool     `yaml:"is_self" json:"is_self"`
-	Enabled        bool     `yaml:"enabled" json:"enabled"`
-	Notes          string   `yaml:"notes" json:"notes"`
+	ID              int64    `yaml:"id" json:"id"`
+	Name            string   `yaml:"name" json:"name"`
+	Hostname        string   `yaml:"hostname" json:"hostname"`
+	SSHPort         int      `yaml:"ssh_port" json:"ssh_port"`
+	SSHUser         string   `yaml:"ssh_user" json:"ssh_user"`
+	Type            HostType `yaml:"host_type" json:"host_type"`
+	PackageManager  string   `yaml:"package_manager" json:"package_manager"`
+	OSPretty        string   `yaml:"os_pretty" json:"os_pretty"`
+	Arch            string   `yaml:"arch" json:"arch"`
+	IsProxmoxHost   bool     `yaml:"is_proxmox_host" json:"is_proxmox_host"`
+	IsSelf          bool     `yaml:"is_self" json:"is_self"`
+	Enabled         bool     `yaml:"enabled" json:"enabled"`
+	AutoReboot      bool     `yaml:"auto_reboot" json:"auto_reboot"`
+	AutoRebootDelay int      `yaml:"auto_reboot_countdown_seconds" json:"auto_reboot_countdown_seconds"`
+	Notes           string   `yaml:"notes" json:"notes"`
 }
 
 // InventorySchedule is a schedule backup record.

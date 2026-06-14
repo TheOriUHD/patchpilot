@@ -111,11 +111,19 @@ func (m model) handleHostListKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "e":
 		if host, ok := m.selectedHost(); ok {
+			if m.hostInProgress(host.ID) {
+				m.status = "cannot toggle during update"
+				return m, nil
+			}
 			m.pending = pendingAction{Kind: "toggle", Host: host}
 		}
 		return m, nil
 	case "R":
 		if host, ok := m.selectedHost(); ok {
+			if m.hostInProgress(host.ID) {
+				m.status = "host is already being updated"
+				return m, nil
+			}
 			m.pending = pendingAction{Kind: "run", Host: host}
 		}
 		return m, nil
@@ -140,6 +148,10 @@ func (m model) handleDetailKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "u":
 		if host, ok := m.selectedHost(); ok {
+			if m.hostInProgress(host.ID) {
+				m.status = "host is already being updated"
+				return m, nil
+			}
 			m.pending = pendingAction{Kind: "run", Host: host}
 		}
 		return m, nil
@@ -151,17 +163,45 @@ func (m model) handleDetailKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "n":
 		if host, ok := m.selectedHost(); ok {
+			if m.hostInProgress(host.ID) {
+				m.status = "cannot rename during update"
+				return m, nil
+			}
 			m.renameMode = true
 			m.renameBuffer = host.Name
 		}
 		return m, nil
 	case "e":
 		if host, ok := m.selectedHost(); ok {
+			if m.hostInProgress(host.ID) {
+				m.status = "cannot toggle during update"
+				return m, nil
+			}
 			m.pending = pendingAction{Kind: "toggle", Host: host}
+		}
+		return m, nil
+	case "b":
+		if host, ok := m.selectedHost(); ok {
+			if m.hostInProgress(host.ID) {
+				m.status = "cannot edit reboot policy during update"
+				return m, nil
+			}
+			input := hostUpdateFromHost(host)
+			input.AutoReboot = !host.AutoReboot
+			input.AutoRebootDelay = core.NormalizeRebootDelay(host.AutoRebootDelay)
+			message := "Reboot policy set to report only"
+			if input.AutoReboot {
+				message = "Reboot policy set to auto-reboot"
+			}
+			return m, updateHostCmd(m.ctx, m.client, host.ID, input, message)
 		}
 		return m, nil
 	case "x":
 		if host, ok := m.selectedHost(); ok {
+			if m.hostInProgress(host.ID) {
+				m.status = "cannot remove host while update is in progress"
+				return m, nil
+			}
 			m.pending = pendingAction{Kind: "remove", Host: host}
 		}
 		return m, nil
@@ -202,7 +242,8 @@ func (m model) handleRenameKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.renameMode = false
-		input := core.HostUpdate{Name: strings.TrimSpace(m.renameBuffer), Enabled: host.Enabled, Notes: host.Notes}
+		input := hostUpdateFromHost(host)
+		input.Name = strings.TrimSpace(m.renameBuffer)
 		return m, updateHostCmd(m.ctx, m.client, host.ID, input, "Host renamed")
 	case "backspace":
 		if len(m.renameBuffer) > 0 {
@@ -218,6 +259,7 @@ func (m model) handleRenameKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m model) confirmPending() (tea.Model, tea.Cmd) {
 	action := m.pending
+	m.pending = pendingAction{}
 	switch action.Kind {
 	case "toggle":
 		return m, toggleHostCmd(m.ctx, m.client, action.Host.ID)
@@ -227,7 +269,6 @@ func (m model) confirmPending() (tea.Model, tea.Cmd) {
 	case "run":
 		return m, runHostCmd(m.ctx, m.client, action.Host.ID)
 	}
-	m.pending = pendingAction{}
 	return m, nil
 }
 
@@ -272,7 +313,7 @@ func (m model) renderHostList(bodyHeight int) string {
 		builder.WriteString(m.styles.MutedText.Render("filter: " + m.hostFilter))
 	}
 	builder.WriteString("\n\n")
-	builder.WriteString(fmt.Sprintf("%-2s %-22s %-12s %-12s %-12s %-8s %s\n", "", "Name", "Type", "Package", "Last", "Updates", "Reboot"))
+	fmt.Fprintf(&builder, "%-2s %-22s %-12s %-12s %-12s %-8s %s\n", "", "Name", "Type", "Package", "Last", "Updates", "Reboot")
 	builder.WriteString(m.styles.MutedText.Render(strings.Repeat("─", 78)))
 	builder.WriteByte('\n')
 	for index, host := range hosts {
@@ -284,7 +325,13 @@ func (m model) renderHostList(bodyHeight int) string {
 		if !host.Enabled {
 			status = theme.SymbolDisabled
 		}
+		if m.hostInProgress(host.ID) {
+			status = theme.SymbolRefresh
+		}
 		line := fmt.Sprintf("%-2s %-22s %-12s %-12s %-12s %-8s %s", cursor+status, truncate(host.Name, 22), host.Type, host.PackageManager, "-", "-", m.hostRebootHint(host.ID))
+		if m.hostInProgress(host.ID) {
+			line = m.styles.MutedText.Render(line)
+		}
 		if index == m.hostSelected {
 			builder.WriteString(m.styles.ActiveTab.Render(line))
 		} else {
@@ -320,12 +367,16 @@ func (m model) renderHostDetail(bodyHeight int) string {
 	switch m.detailTab {
 	case 0:
 		if host.Type == core.HostTypeTrueNAS || host.Type == core.HostTypeHAOS || host.PackageManager == string(pkgmgr.ManagerTrueNASAPI) || host.PackageManager == string(pkgmgr.ManagerHAOSAPI) {
-			builder.WriteString(fmt.Sprintf("Endpoint: %s\n", host.Hostname))
+			fmt.Fprintf(&builder, "Endpoint: %s\n", host.Hostname)
 		} else {
-			builder.WriteString(fmt.Sprintf("Hostname: %s:%d\n", host.Hostname, host.SSHPort))
+			fmt.Fprintf(&builder, "Hostname: %s:%d\n", host.Hostname, host.SSHPort)
 		}
-		builder.WriteString(fmt.Sprintf("Type: %s\nPackage: %s\nOS: %s\nArch: %s\nEnabled: %v\nReboot: %s\nNotes: %s\n", host.Type, host.PackageManager, host.OSPretty, host.Arch, host.Enabled, m.hostRebootHint(host.ID), host.Notes))
-		builder.WriteString("\nActions: u update  d dry run  n rename  e enable/disable  x remove  q back")
+		fmt.Fprintf(&builder, "Type: %s\nPackage: %s\nOS: %s\nArch: %s\nEnabled: %v\nReboot: %s\nReboot policy: %s\nNotes: %s\n", host.Type, host.PackageManager, host.OSPretty, host.Arch, host.Enabled, m.hostRebootHint(host.ID), rebootPolicyText(host), host.Notes)
+		if m.hostInProgress(host.ID) {
+			builder.WriteString("\nUpdate in progress: mutating actions disabled. L view live run, K cancel.")
+		} else {
+			builder.WriteString("\nActions: u update  d dry run  n rename  b reboot policy  e enable/disable  x remove  q back")
+		}
 	case 1:
 		builder.WriteString("No host run history yet. Manual runs created here will appear in the Logs milestone view.")
 	case 2:
@@ -359,7 +410,7 @@ func (m model) hostKeybinds() []string {
 		return []string{"y confirm", "n cancel"}
 	}
 	if m.hostScreen == hostScreenDetail {
-		return []string{"Tab detail tab", "u update", "d dry run", "n rename", "e toggle", "x remove", "q back"}
+		return []string{"Tab detail tab", "u update", "d dry run", "b reboot", "n rename", "e toggle", "x remove", "q back"}
 	}
 	return []string{"↑/↓ navigate", "Enter detail", "a add", "R run host", "e toggle", "/ filter", "q quit"}
 }
@@ -396,6 +447,29 @@ func (m model) hostRebootHint(hostID int64) string {
 		}
 	}
 	return "-"
+}
+
+func (m model) hostInProgress(hostID int64) bool {
+	if m.liveRun == nil {
+		return false
+	}
+	for _, hostRun := range m.liveRun.HostRuns {
+		if hostRun.HostID == hostID && (hostRun.Status == core.HostRunStatusPending || hostRun.Status == core.HostRunStatusRunning) {
+			return true
+		}
+	}
+	return false
+}
+
+func hostUpdateFromHost(host core.Host) core.HostUpdate {
+	return core.HostUpdate{Name: host.Name, Enabled: host.Enabled, AutoReboot: host.AutoReboot, AutoRebootDelay: core.NormalizeRebootDelay(host.AutoRebootDelay), Notes: host.Notes}
+}
+
+func rebootPolicyText(host core.Host) string {
+	if host.AutoReboot {
+		return fmt.Sprintf("auto-reboot after successful update (%ds countdown)", core.NormalizeRebootDelay(host.AutoRebootDelay))
+	}
+	return "report only"
 }
 
 func updateHostCmd(ctx context.Context, client *ipc.Client, id int64, input core.HostUpdate, message string) tea.Cmd {

@@ -14,7 +14,7 @@ func TestRunRepositoryQueueAndPromotion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open() error: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	if err := db.Migrate(context.Background(), migrations.Files); err != nil {
 		t.Fatalf("Migrate() error: %v", err)
 	}

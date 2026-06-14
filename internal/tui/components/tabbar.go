@@ -1,8 +1,7 @@
 package components
 
 import (
-	"strings"
-
+	"github.com/charmbracelet/lipgloss"
 	"github.com/TheOriUHD/patchpilot/internal/tui/theme"
 )
 
@@ -23,5 +22,5 @@ func RenderTabBar(styles theme.Styles, state TabBarState) string {
 		}
 		rendered = append(rendered, styles.Tab.Render(text))
 	}
-	return strings.Join(rendered, " ")
+	return lipgloss.JoinHorizontal(lipgloss.Top, rendered...) + "\n"
 }

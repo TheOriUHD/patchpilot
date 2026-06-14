@@ -110,7 +110,7 @@ func (t *LogTailer) readNew(path string, state *tailState) {
 	if err != nil {
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	if _, err := file.Seek(state.offset, io.SeekStart); err != nil {
 		return
 	}

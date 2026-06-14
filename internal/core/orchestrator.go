@@ -47,6 +47,11 @@ type OrchestratorRunLogStore interface {
 	Logs(ctx context.Context, id int64, maxLines int) (RunLogResponse, error)
 }
 
+// OrchestratorHostRunStore optionally checks whether a host has an in-flight host run.
+type OrchestratorHostRunStore interface {
+	HostInFlight(ctx context.Context, hostID int64) (bool, error)
+}
+
 // OrchestratorScheduleStore is the schedule persistence interface required by the orchestrator.
 type OrchestratorScheduleStore interface {
 	List(ctx context.Context) ([]Schedule, error)
@@ -146,6 +151,27 @@ func (o *Orchestrator) RecordAudit(ctx context.Context, actor string, action str
 // GetRun returns one run with host runs.
 func (o *Orchestrator) GetRun(ctx context.Context, id int64) (RunDetail, error) {
 	return o.Runs.Get(ctx, id)
+}
+
+// HostInFlight reports whether a host currently has a pending or running host run.
+func (o *Orchestrator) HostInFlight(ctx context.Context, hostID int64) (bool, error) {
+	if store, ok := o.Runs.(OrchestratorHostRunStore); ok {
+		return store.HostInFlight(ctx, hostID)
+	}
+	active, err := o.Runs.Active(ctx)
+	if err != nil || active == nil {
+		return false, err
+	}
+	detail, err := o.Runs.Get(ctx, active.ID)
+	if err != nil {
+		return false, err
+	}
+	for _, hostRun := range detail.HostRuns {
+		if hostRun.HostID == hostID && (hostRun.Status == HostRunStatusPending || hostRun.Status == HostRunStatusRunning) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // RunHostNow creates or queues a single-host run.
@@ -506,7 +532,7 @@ func (o *Orchestrator) executeHostRun(ctx context.Context, host Host, hostRun Ho
 	if err != nil {
 		return hostOutcome{Status: HostRunStatusFailed, ExitCode: -1, Summary: err.Error()}
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	_, _ = fmt.Fprintf(file, "patchpilot host %s started at %s\n", host.Name, time.Now().UTC().Format(time.RFC3339))
 
 	keypair, err := o.Keys.Ensure(ctx)
@@ -519,7 +545,7 @@ func (o *Orchestrator) executeHostRun(ctx context.Context, host Host, hostRun Ho
 		appendCleanLog(hostRun.LogPath, err.Error()+"\n")
 		return hostOutcome{Status: HostRunStatusFailed, ExitCode: -1, Summary: err.Error()}
 	}
-	defer runner.Close()
+	defer func() { _ = runner.Close() }()
 
 	manager := pkgmgr.PackageManager(host.PackageManager)
 	paths, err := resolveCommandPaths(ctx, runner, nil, HostFacts{CurrentUID: "0", PackageManager: manager}, manager, nil)
@@ -707,7 +733,7 @@ func appendCleanLog(path string, body string) {
 	if err != nil {
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	_, _ = file.WriteString(stripANSI(body))
 }
 

@@ -267,9 +267,9 @@ func printUsage(w io.Writer) {
 }
 
 func daemonClient() (*ipc.Client, error) {
-	cfg, err := config.Load(context.Background())
+	socketPath, err := config.ClientSocketPath()
 	if err != nil {
-		return nil, fmt.Errorf("load config: %w", err)
+		return nil, fmt.Errorf("resolve daemon socket: %w", err)
 	}
-	return ipc.NewClient(cfg.Paths.SocketPath), nil
+	return ipc.NewClient(socketPath), nil
 }

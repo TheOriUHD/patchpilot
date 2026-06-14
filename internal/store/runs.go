@@ -118,7 +118,7 @@ func (r *RunRepository) ListPage(ctx context.Context, query core.RunListQuery) (
 	if err != nil {
 		return nil, fmt.Errorf("list runs: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	runs := make([]core.Run, 0)
 	for rows.Next() {
@@ -210,6 +210,22 @@ func (r *RunRepository) Active(ctx context.Context) (*core.Run, error) {
 	return nil, fmt.Errorf("get active run: %w", err)
 }
 
+// HostInFlight reports whether a host is pending or running inside an active run.
+func (r *RunRepository) HostInFlight(ctx context.Context, hostID int64) (bool, error) {
+	var count int
+	if err := r.db.QueryRowContext(ctx, `
+				SELECT COUNT(1)
+				FROM host_runs hr
+				JOIN runs r ON r.id = hr.run_id
+				WHERE hr.host_id = ?
+					AND r.status IN ('queued', 'running')
+					AND hr.status IN ('pending', 'running')
+		`, hostID).Scan(&count); err != nil {
+		return false, fmt.Errorf("check host %d in-flight run: %w", hostID, err)
+	}
+	return count > 0, nil
+}
+
 // NextQueued returns the oldest queued manual run, if any.
 func (r *RunRepository) NextQueued(ctx context.Context) (*core.RunDetail, error) {
 	var id int64
@@ -297,7 +313,7 @@ func (r *RunRepository) hostRuns(ctx context.Context, runID int64) ([]core.HostR
 	if err != nil {
 		return nil, fmt.Errorf("list host runs for run %d: %w", runID, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	hostRuns := make([]core.HostRun, 0)
 	for rows.Next() {

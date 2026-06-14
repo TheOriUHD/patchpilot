@@ -261,7 +261,7 @@ func tailFile(path string, maxLines int) []string {
 	if err != nil {
 		return nil
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	lines := make([]string, 0, maxLines)
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {

@@ -147,11 +147,11 @@ func (m model) renderSettingsView(bodyHeight int) string {
 	builder.WriteString(m.styles.CardTitle.Render("Settings"))
 	builder.WriteString("\n\n")
 	builder.WriteString(m.styles.CardTitle.Render("Daemon"))
-	builder.WriteString(fmt.Sprintf("\nData dir: %s\nSocket: %s\nLog: %s\n", snapshot.Paths.DataDir, snapshot.Paths.SocketPath, snapshot.Paths.LogPath))
+	fmt.Fprintf(&builder, "\nData dir: %s\nSocket: %s\nLog: %s\n", snapshot.Paths.DataDir, snapshot.Paths.SocketPath, snapshot.Paths.LogPath)
 	builder.WriteString(m.styles.MutedText.Render("Configured through environment variables or config.yaml."))
 	builder.WriteString("\n\n")
 	builder.WriteString(m.styles.CardTitle.Render("Concurrency"))
-	builder.WriteString(fmt.Sprintf("\nExperimental parallel Group A updates: %v", snapshot.ConcurrencyEnabled))
+	fmt.Fprintf(&builder, "\nExperimental parallel Group A updates: %v", snapshot.ConcurrencyEnabled)
 	builder.WriteString("\n")
 	builder.WriteString(m.styles.MutedText.Render("Only standard non-Proxmox Group A hosts may run in parallel. TrueNAS, HAOS, Proxmox, and self always stay sequential."))
 	builder.WriteString("\n\n")
@@ -179,7 +179,7 @@ func (m model) renderSettingsView(bodyHeight int) string {
 		builder.WriteString("\n-")
 	} else {
 		for _, log := range snapshot.SelfUpdateLogs {
-			builder.WriteString(fmt.Sprintf("\nrun %d  %s  %d bytes", log.RunID, log.ModifiedAt.Format("Jan 02 15:04"), log.Size))
+			fmt.Fprintf(&builder, "\nrun %d  %s  %d bytes", log.RunID, log.ModifiedAt.Format("Jan 02 15:04"), log.Size)
 		}
 	}
 	builder.WriteString("\n\n")
@@ -191,7 +191,7 @@ func (m model) renderSettingsView(bodyHeight int) string {
 	}
 	builder.WriteString("\n\n")
 	builder.WriteString(m.styles.CardTitle.Render("About"))
-	builder.WriteString(fmt.Sprintf("\nVersion: %s\nCommit: %s\nBuild date: %s\nGo: %s\nPlatform: %s", snapshot.About.Version, snapshot.About.Commit, snapshot.About.BuildDate, snapshot.About.GoVersion, snapshot.About.OSArch))
+	fmt.Fprintf(&builder, "\nVersion: %s\nCommit: %s\nBuild date: %s\nGo: %s\nPlatform: %s", snapshot.About.Version, snapshot.About.Commit, snapshot.About.BuildDate, snapshot.About.GoVersion, snapshot.About.OSArch)
 	if m.settingsConfirm != "" {
 		builder.WriteString("\n\n")
 		builder.WriteString(m.styles.ErrorText.Render(m.settingsConfirmText()))

@@ -1,0 +1,2 @@
+ALTER TABLE hosts ADD COLUMN auto_reboot INTEGER NOT NULL DEFAULT 0 CHECK (auto_reboot IN (0, 1));
+ALTER TABLE hosts ADD COLUMN auto_reboot_countdown_seconds INTEGER NOT NULL DEFAULT 30 CHECK (auto_reboot_countdown_seconds BETWEEN 5 AND 3600);

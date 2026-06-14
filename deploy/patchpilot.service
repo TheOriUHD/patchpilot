@@ -1,0 +1,33 @@
+[Unit]
+Description=patchpilot homelab update orchestrator
+Documentation=https://github.com/TheOriUHD/patchpilot
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=notify
+User=patchpilot
+Group=patchpilot
+ExecStart=/usr/local/bin/patchpilot daemon
+Restart=on-failure
+RestartSec=5s
+RuntimeDirectory=patchpilot
+RuntimeDirectoryMode=0750
+StateDirectory=patchpilot
+StateDirectoryMode=0700
+LogsDirectory=patchpilot
+LogsDirectoryMode=0750
+ProtectSystem=strict
+ProtectHome=true
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/var/lib/patchpilot /var/log/patchpilot /run/patchpilot /etc/patchpilot
+
+[Install]
+WantedBy=multi-user.target

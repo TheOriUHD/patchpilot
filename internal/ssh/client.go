@@ -69,7 +69,7 @@ func (c *Client) Run(ctx context.Context, command string, stdin []byte) (Command
 	if err != nil {
 		return CommandResult{}, fmt.Errorf("open ssh session: %w", err)
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -108,7 +108,7 @@ func (c *Client) RunStream(ctx context.Context, command string, stdin []byte, on
 	if err != nil {
 		return CommandResult{}, fmt.Errorf("open ssh session: %w", err)
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 
 	stdoutPipe, err := session.StdoutPipe()
 	if err != nil {

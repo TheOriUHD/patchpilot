@@ -98,10 +98,12 @@ type BootstrapSummary struct {
 
 // CommitHostInput saves a completed wizard session to inventory.
 type CommitHostInput struct {
-	SessionID string `json:"session_id"`
-	Name      string `json:"name"`
-	Notes     string `json:"notes"`
-	Enabled   bool   `json:"enabled"`
+	SessionID       string `json:"session_id"`
+	Name            string `json:"name"`
+	Notes           string `json:"notes"`
+	Enabled         bool   `json:"enabled"`
+	AutoReboot      bool   `json:"auto_reboot"`
+	AutoRebootDelay int    `json:"auto_reboot_countdown_seconds"`
 }
 
 // HostService coordinates host inventory, detection, bootstrap, dry-runs, and manual updates.
@@ -133,7 +135,7 @@ func (s *HostService) DetectStandard(ctx context.Context, input StandardDetectIn
 	if err != nil {
 		return StandardDetectResult{}, fmt.Errorf("connect to %s as %s: %w", input.Hostname, input.SSHUser, err)
 	}
-	defer runner.Close()
+	defer func() { _ = runner.Close() }()
 
 	result, err := runner.Run(ctx, StandardDetectionProbe, nil)
 	if err != nil {
@@ -157,7 +159,7 @@ func (s *HostService) RootAssist(ctx context.Context, input RootAssistInput) err
 	if err != nil {
 		return fmt.Errorf("connect as root: %w", err)
 	}
-	defer runner.Close()
+	defer func() { _ = runner.Close() }()
 
 	manager := input.Facts.PackageManager
 	if manager == "" {
@@ -216,17 +218,19 @@ func (s *HostService) CommitBootstrap(ctx context.Context, input CommitHostInput
 		name = state.Facts.Hostname
 	}
 	host, err := s.Hosts.Create(ctx, HostCreate{
-		Name:           name,
-		Hostname:       state.Input.Hostname,
-		SSHPort:        normalizePort(state.Input.SSHPort),
-		SSHUser:        "patchpilot",
-		Type:           HostTypeStandard,
-		PackageManager: string(state.Facts.PackageManager),
-		OSPretty:       state.Facts.OSPretty,
-		Arch:           state.Facts.Arch,
-		IsProxmoxHost:  state.Facts.IsProxmox,
-		Enabled:        input.Enabled,
-		Notes:          input.Notes,
+		Name:            name,
+		Hostname:        state.Input.Hostname,
+		SSHPort:         normalizePort(state.Input.SSHPort),
+		SSHUser:         "patchpilot",
+		Type:            HostTypeStandard,
+		PackageManager:  string(state.Facts.PackageManager),
+		OSPretty:        state.Facts.OSPretty,
+		Arch:            state.Facts.Arch,
+		IsProxmoxHost:   state.Facts.IsProxmox,
+		Enabled:         input.Enabled,
+		AutoReboot:      input.AutoReboot,
+		AutoRebootDelay: NormalizeRebootDelay(input.AutoRebootDelay),
+		Notes:           input.Notes,
 	})
 	if err != nil {
 		return Host{}, err
@@ -248,6 +252,31 @@ func (s *HostService) DryRunHost(ctx context.Context, hostID int64) (pkgmgr.DryR
 		return s.dryRunHAOS(ctx, host)
 	}
 	return s.dryRunExistingHost(ctx, host)
+}
+
+// RebootHost asks a Standard host to reboot through its installed patchpilot SSH account.
+func (s *HostService) RebootHost(ctx context.Context, hostID int64) error {
+	host, err := s.Hosts.Get(ctx, hostID)
+	if err != nil {
+		return err
+	}
+	if host.Type != HostTypeStandard || host.IsSelf {
+		return fmt.Errorf("reboot is only supported for standard non-self hosts")
+	}
+	keypair, err := s.Keys.Ensure(ctx)
+	if err != nil {
+		return err
+	}
+	runner, err := remotessh.ConnectKey(ctx, host.Hostname, normalizePort(host.SSHPort), host.SSHUser, keypair.Signer)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = runner.Close() }()
+	if _, err := runner.Run(ctx, "sudo -n systemctl reboot || sudo -n reboot", nil); err != nil {
+		return fmt.Errorf("reboot host %s: %w", host.Name, err)
+	}
+	s.audit(ctx, "tui", "host.reboot", "host", &host.ID, map[string]any{"name": host.Name})
+	return nil
 }
 
 type bootstrapSessionState struct {
@@ -330,7 +359,7 @@ func (s *HostService) runBootstrapSession(ctx context.Context, sessionID string,
 		reportError("Reconnecting as patchpilot with key", err)
 		return
 	}
-	defer patchpilotRunner.Close()
+	defer func() { _ = patchpilotRunner.Close() }()
 	reporter.Report(BootstrapEvent{Step: "Reconnecting as patchpilot with key", Status: BootstrapStepSuccess, Message: "connected"})
 
 	verifyCommand, err := pkgmgr.VerifyCommand(input.Facts.PackageManager, bootstrapResult.ResolvedPaths)
@@ -388,7 +417,7 @@ func (s *HostService) dryRunExistingHost(ctx context.Context, host Host) (pkgmgr
 	if err != nil {
 		return pkgmgr.DryRunResult{}, err
 	}
-	defer runner.Close()
+	defer func() { _ = runner.Close() }()
 	manager := pkgmgr.PackageManager(host.PackageManager)
 	paths, err := resolveCommandPaths(ctx, runner, nil, HostFacts{CurrentUID: "0", PackageManager: manager}, manager, nil)
 	if err != nil {
@@ -403,7 +432,7 @@ func (s *HostService) dryRunWithRunner(ctx context.Context, runner remotessh.Run
 		return pkgmgr.DryRunResult{}, err
 	}
 	result, err := runner.Run(ctx, command, nil)
-	if err != nil && !(manager == pkgmgr.ManagerDNF && result.ExitCode == 100) {
+	if err != nil && (manager != pkgmgr.ManagerDNF || result.ExitCode != 100) {
 		return pkgmgr.DryRunResult{}, fmt.Errorf("run dry-run command: %w", err)
 	}
 	return pkgmgr.ParseDryRunOutput(manager, result.Stdout+"\n"+result.Stderr, result.ExitCode)

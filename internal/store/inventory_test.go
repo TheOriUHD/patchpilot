@@ -14,7 +14,7 @@ func TestInventoryRoundTripExcludesAPITokens(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	source := openMigratedTestDB(t)
-	defer source.Close()
+	defer func() { _ = source.Close() }()
 	hosts := NewHostRepository(source)
 	standard, err := hosts.Create(ctx, core.HostCreate{Name: "vm1", Hostname: "192.0.2.10", SSHUser: "patchpilot", Type: core.HostTypeStandard, PackageManager: "apt", Enabled: true})
 	if err != nil {
@@ -50,7 +50,7 @@ func TestInventoryRoundTripExcludesAPITokens(t *testing.T) {
 		}
 	}
 	target := openMigratedTestDB(t)
-	defer target.Close()
+	defer func() { _ = target.Close() }()
 	result, err := NewInventoryRepository(target).Import(ctx, backup, core.InventoryImportOptions{})
 	if err != nil {
 		t.Fatalf("Import() error: %v", err)
@@ -88,7 +88,7 @@ func TestInventoryImportConflictPreflight(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	db := openMigratedTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	if _, err := NewHostRepository(db).Create(ctx, core.HostCreate{Name: "vm1", Hostname: "old", SSHUser: "patchpilot", Type: core.HostTypeStandard, PackageManager: "apt", Enabled: true}); err != nil {
 		t.Fatalf("Create host error: %v", err)
 	}
@@ -116,7 +116,7 @@ func openMigratedTestDB(t *testing.T) *DB {
 		t.Fatalf("Open() error: %v", err)
 	}
 	if err := db.Migrate(context.Background(), migrations.Files); err != nil {
-		db.Close()
+		_ = db.Close()
 		t.Fatalf("Migrate() error: %v", err)
 	}
 	return db

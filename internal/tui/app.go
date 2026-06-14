@@ -25,9 +25,9 @@ const (
 
 // Run starts the fullscreen patchpilot TUI.
 func Run(ctx context.Context) (err error) {
-	cfg, err := config.Load(ctx)
+	socketPath, err := config.ClientSocketPath()
 	if err != nil {
-		return fmt.Errorf("load config: %w", err)
+		return fmt.Errorf("resolve daemon socket: %w", err)
 	}
 
 	var program *tea.Program
@@ -42,7 +42,7 @@ func Run(ctx context.Context) (err error) {
 		err = fmt.Errorf("tui recovered from panic: %v", recovered)
 	}()
 
-	model := newModel(ctx, cfg)
+	model := newModel(ctx, socketPath)
 	program = tea.NewProgram(model, tea.WithAltScreen(), tea.WithContext(ctx))
 	if _, err = program.Run(); err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -55,7 +55,6 @@ func Run(ctx context.Context) (err error) {
 
 type model struct {
 	ctx          context.Context
-	cfg          config.Config
 	client       *ipc.Client
 	styles       theme.Styles
 	spinner      spinner.Model
@@ -88,23 +87,35 @@ type model struct {
 	scheduleSelected int
 	scheduleScreen   scheduleScreen
 	scheduleEditor   scheduleEditor
+	schedulePending  schedulePendingAction
 
-	runs              []core.Run
-	runLoading        bool
-	runError          string
-	runSelected       int
-	liveRun           *core.RunDetail
-	liveLogLines      []liveLogEntry
-	liveHostIndex     int
-	liveCancel        bool
-	runEvents         <-chan stream.Event
-	runEventErrors    <-chan error
-	runStreamStop     context.CancelFunc
-	historicalRun     bool
-	runOffset         int
-	runDateRange      string
-	runStatusFilters  map[core.RunStatus]bool
-	runTriggerFilters map[core.RunTrigger]bool
+	runs               []core.Run
+	runLoading         bool
+	runError           string
+	runSelected        int
+	liveRun            *core.RunDetail
+	liveLogLines       []liveLogEntry
+	liveHostIndex      int
+	liveModalVisible   bool
+	liveMinimized      bool
+	liveCompleted      bool
+	liveScrollOffset   int
+	liveStartedAt      time.Time
+	liveCancel         bool
+	runEvents          <-chan stream.Event
+	runEventErrors     <-chan error
+	runStreamStop      context.CancelFunc
+	runBanner          string
+	liveAvailableRunID int64
+	runTreeDetail      *core.RunDetail
+	runTreeLogs        []core.RunLogEntry
+	runTreeHostIndex   int
+	logViewer          *historyLogViewer
+	autoReboot         autoRebootState
+	runOffset          int
+	runDateRange       string
+	runStatusFilters   map[core.RunStatus]bool
+	runTriggerFilters  map[core.RunTrigger]bool
 
 	settingsLoading         bool
 	settingsError           string
@@ -125,12 +136,20 @@ type daemonStartedMsg struct {
 	err error
 }
 
-func newModel(ctx context.Context, cfg config.Config) model {
+type runPollTickMsg struct{}
+
+type autoRebootTickMsg struct{}
+
+type hostRebootMsg struct {
+	hostID int64
+	err    error
+}
+
+func newModel(ctx context.Context, socketPath string) model {
 	styles := theme.NewStyles()
 	return model{
 		ctx:         ctx,
-		cfg:         cfg,
-		client:      ipc.NewClient(cfg.Paths.SocketPath),
+		client:      ipc.NewClient(socketPath),
 		styles:      styles,
 		spinner:     components.NewSpinner(styles),
 		tabs:        []string{"Hosts", "Schedules", "Logs", "Settings"},
@@ -174,7 +193,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.scheduleLoading = true
 		m.runLoading = true
 		m.settingsLoading = true
-		return m, tea.Batch(loadHostsCmd(m.ctx, m.client), loadSchedulesCmd(m.ctx, m.client), loadRunsCmd(m.ctx, m.client), loadSettingsCmd(m.ctx, m.client))
+		return m, tea.Batch(loadHostsCmd(m.ctx, m.client), loadSchedulesCmd(m.ctx, m.client), loadRunsCmd(m.ctx, m.client), loadSettingsCmd(m.ctx, m.client), runPollCmd())
 	case daemonStartedMsg:
 		m.starting = false
 		if typed.err != nil {
@@ -239,6 +258,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.runError = ""
 		m.runs = typed.runs
+		m.observeActiveRun()
 		if m.runSelected >= len(m.runs) {
 			m.runSelected = max(0, len(m.runs)-1)
 		}
@@ -248,11 +268,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = typed.err.Error()
 			return m, nil
 		}
-		m.activeTab = 2
-		m.liveRun = &typed.detail
-		m.liveLogLines = nil
-		m.liveHostIndex = 0
-		m.historicalRun = false
+		m.openLiveRun(typed.detail)
 		m.status = fmt.Sprintf("Run %d %s", typed.detail.Run.ID, typed.detail.Run.Status)
 		return m, tea.Batch(m.startRunStream(typed.detail.Run.ID), loadRunsCmd(m.ctx, m.client))
 	case runDetailLoadedMsg:
@@ -260,13 +276,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = typed.err.Error()
 			return m, nil
 		}
-		m.liveRun = &typed.detail
-		m.liveLogLines = nil
-		for _, entry := range typed.logs {
-			m.liveLogLines = append(m.liveLogLines, liveLogEntry{hostRunID: entry.HostRunID, hostName: entry.HostName, line: entry.Line})
+		if typed.detail.Run.Status == core.RunStatusRunning || typed.detail.Run.Status == core.RunStatusQueued {
+			m.openLiveRun(typed.detail)
+			return m, m.startRunStream(typed.detail.Run.ID)
 		}
-		m.liveHostIndex = 0
-		m.historicalRun = true
+		m.runTreeDetail = &typed.detail
+		m.runTreeLogs = typed.logs
+		m.runTreeHostIndex = 0
 		return m, nil
 	case runStreamMsg:
 		return m, m.handleRunStreamEvent(typed.event)
@@ -283,6 +299,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.status = "Run cancelled"
 		return m, loadRunsCmd(m.ctx, m.client)
+	case runPollTickMsg:
+		if m.daemonState != components.DaemonUp {
+			return m, runPollCmd()
+		}
+		return m, tea.Batch(loadRunsCmd(m.ctx, m.client), runPollCmd())
+	case autoRebootTickMsg:
+		return m.handleAutoRebootTick()
+	case hostRebootMsg:
+		return m.handleHostRebootMsg(typed)
 	case dryRunLoadedMsg:
 		if typed.err != nil {
 			m.status = typed.err.Error()
@@ -340,7 +365,7 @@ func (m model) View() string {
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, m.styles.ErrorText.Render(message))
 	}
 
-	tabbar := components.RenderTabBar(m.styles, components.TabBarState{Labels: m.tabs, Active: m.activeTab})
+	tabbar := strings.TrimSuffix(components.RenderTabBar(m.styles, components.TabBarState{Labels: m.tabs, Active: m.activeTab}), "\n")
 	status := components.RenderStatusBar(m.styles, components.StatusBarState{
 		Keybinds: m.keybinds(),
 		Daemon:   m.daemonState,
@@ -352,11 +377,37 @@ func (m model) View() string {
 	if bodyHeight < 1 {
 		bodyHeight = 1
 	}
-	body := lipgloss.NewStyle().Width(m.width).Height(bodyHeight).Render(m.renderActiveTab(bodyHeight))
+	bodyContent := m.renderActiveTab(bodyHeight)
+	if m.runBanner != "" && !m.liveModalVisible {
+		bodyContent = m.renderRunBanner() + "\n" + bodyContent
+	}
+	if m.logViewer != nil {
+		bodyContent = m.renderHistoryLogViewer(bodyHeight)
+	} else if m.liveRun != nil && m.liveModalVisible {
+		bodyContent = m.renderLiveRunOverlay(bodyHeight)
+	}
+	body := lipgloss.NewStyle().Width(m.width).Height(bodyHeight).Render(bodyContent)
 	return lipgloss.JoinVertical(lipgloss.Left, tabbar, body, status)
 }
 
 func (m model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.logViewer != nil {
+		return m.handleHistoryLogViewerKey(key)
+	}
+	if m.liveRun != nil && m.liveModalVisible {
+		return m.handleLiveRunKey(key)
+	}
+	if key.String() == "l" || key.String() == "L" {
+		if m.liveRun != nil {
+			m.liveModalVisible = true
+			m.liveMinimized = false
+			m.runBanner = ""
+			return m, nil
+		}
+		if m.liveAvailableRunID != 0 {
+			return m, loadRunDetailCmd(m.ctx, m.client, m.liveAvailableRunID)
+		}
+	}
 	if m.daemonState == components.DaemonUp && m.activeTab == 0 {
 		return m.handleHostsKey(key)
 	}
@@ -482,6 +533,13 @@ func loadHostsCmd(ctx context.Context, client *ipc.Client) tea.Cmd {
 
 func max(left int, right int) int {
 	if left > right {
+		return left
+	}
+	return right
+}
+
+func min(left int, right int) int {
+	if left < right {
 		return left
 	}
 	return right

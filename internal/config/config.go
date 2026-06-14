@@ -5,8 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"runtime"
 
 	"gopkg.in/yaml.v3"
+)
+
+const (
+	// ClientSocketEnv overrides the daemon socket for TUI and CLI clients.
+	ClientSocketEnv = "PATCHPILOT_SOCKET"
+	linuxSocketPath = "/run/patchpilot/patchpilot.sock"
 )
 
 // Config contains runtime settings shared by the daemon, TUI, and CLI.
@@ -64,6 +72,21 @@ func Load(ctx context.Context) (Config, error) {
 // DefaultPaths returns platform-specific default filesystem locations.
 func DefaultPaths() (Paths, error) {
 	return defaultPaths()
+}
+
+// ClientSocketPath resolves the daemon socket for TUI and CLI clients without reading daemon config.
+func ClientSocketPath() (string, error) {
+	if value := os.Getenv(ClientSocketEnv); value != "" {
+		return value, nil
+	}
+	if runtime.GOOS == "linux" {
+		return linuxSocketPath, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory: %w", err)
+	}
+	return filepath.Join(home, ".patchpilot", "patchpilot.sock"), nil
 }
 
 func mergeConfig(base Config, loaded Config) Config {

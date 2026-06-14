@@ -18,6 +18,7 @@ import (
 	remotessh "github.com/TheOriUHD/patchpilot/internal/ssh"
 	"github.com/TheOriUHD/patchpilot/internal/store"
 	"github.com/TheOriUHD/patchpilot/internal/stream"
+	"github.com/TheOriUHD/patchpilot/internal/systemd"
 	"github.com/TheOriUHD/patchpilot/migrations"
 )
 
@@ -89,6 +90,7 @@ func Run(ctx context.Context) error {
 	settingsService := &core.SettingsService{Hosts: hostRepo, Settings: settingsRepo, Inventory: inventoryRepo, Audit: auditRepo, Keys: keyStore, Paths: core.SettingsPaths{DataDir: cfg.Paths.DataDir, DatabasePath: cfg.Paths.DatabasePath, SocketPath: cfg.Paths.SocketPath, LogPath: cfg.Paths.LogPath, SecretKeyPath: cfg.Paths.SecretKeyPath}, LogPath: cfg.Paths.LogPath, Logger: logger}
 	router := ipc.NewRouter(time.Now().UTC(), hostService, orchestrator, scheduleEngine, logTailer, settingsService)
 	server := ipc.NewServer(cfg.Paths.SocketPath, router, logger)
+	server.SetReadyFunc(systemd.NotifyReady)
 	if err := server.Serve(ctx); err != nil {
 		return fmt.Errorf("serve daemon api: %w", err)
 	}

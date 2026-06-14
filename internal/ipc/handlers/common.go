@@ -18,7 +18,7 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 }
 
 func readJSON(r *http.Request, dest any) error {
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	if err := json.NewDecoder(r.Body).Decode(dest); err != nil {
 		return fmt.Errorf("decode request: %w", err)
 	}

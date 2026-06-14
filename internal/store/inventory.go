@@ -42,7 +42,7 @@ func (r *InventoryRepository) Export(ctx context.Context) (core.InventoryBackup,
 	}
 	backup := core.InventoryBackup{FormatVersion: 1, ConcurrencyEnabled: concurrency, ScheduleHosts: links}
 	for _, host := range hosts {
-		backup.Hosts = append(backup.Hosts, core.InventoryHost{ID: host.ID, Name: host.Name, Hostname: host.Hostname, SSHPort: host.SSHPort, SSHUser: host.SSHUser, Type: host.Type, PackageManager: host.PackageManager, OSPretty: host.OSPretty, Arch: host.Arch, IsProxmoxHost: host.IsProxmoxHost, IsSelf: host.IsSelf, Enabled: host.Enabled, Notes: host.Notes})
+		backup.Hosts = append(backup.Hosts, core.InventoryHost{ID: host.ID, Name: host.Name, Hostname: host.Hostname, SSHPort: host.SSHPort, SSHUser: host.SSHUser, Type: host.Type, PackageManager: host.PackageManager, OSPretty: host.OSPretty, Arch: host.Arch, IsProxmoxHost: host.IsProxmoxHost, IsSelf: host.IsSelf, Enabled: host.Enabled, AutoReboot: host.AutoReboot, AutoRebootDelay: host.AutoRebootDelay, Notes: host.Notes})
 	}
 	for _, schedule := range schedules {
 		backup.Schedules = append(backup.Schedules, core.InventorySchedule{ID: schedule.ID, Name: schedule.Name, Frequency: schedule.Frequency, Minute: schedule.Minute, Hour: schedule.Hour, DayOfWeek: schedule.DayOfWeek, DayOfMonth: schedule.DayOfMonth, Enabled: schedule.Enabled, MaxConcurrent: schedule.MaxConcurrent})
@@ -122,7 +122,7 @@ func (r *InventoryRepository) Import(ctx context.Context, backup core.InventoryB
 				return result, fmt.Errorf("unsupported conflict action %q", resolution.Action)
 			}
 		}
-		created, err := r.hosts.Create(ctx, core.HostCreate{Name: name, Hostname: host.Hostname, SSHPort: host.SSHPort, SSHUser: host.SSHUser, Type: host.Type, PackageManager: host.PackageManager, OSPretty: host.OSPretty, Arch: host.Arch, IsProxmoxHost: host.IsProxmoxHost, IsSelf: host.IsSelf, Enabled: host.Enabled, Notes: host.Notes})
+		created, err := r.hosts.Create(ctx, core.HostCreate{Name: name, Hostname: host.Hostname, SSHPort: host.SSHPort, SSHUser: host.SSHUser, Type: host.Type, PackageManager: host.PackageManager, OSPretty: host.OSPretty, Arch: host.Arch, IsProxmoxHost: host.IsProxmoxHost, IsSelf: host.IsSelf, Enabled: host.Enabled, AutoReboot: host.AutoReboot, AutoRebootDelay: host.AutoRebootDelay, Notes: host.Notes})
 		if err != nil {
 			return result, err
 		}
@@ -171,7 +171,7 @@ func (r *InventoryRepository) scheduleHosts(ctx context.Context) ([]core.Invento
 	if err != nil {
 		return nil, fmt.Errorf("list schedule host links: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	links := []core.InventoryScheduleHost{}
 	for rows.Next() {
 		var link core.InventoryScheduleHost
@@ -189,9 +189,9 @@ func (r *InventoryRepository) scheduleHosts(ctx context.Context) ([]core.Invento
 func (r *InventoryRepository) overwriteHost(ctx context.Context, id int64, host core.InventoryHost) error {
 	_, err := r.db.ExecContext(ctx, `
 		UPDATE hosts
-		SET hostname = ?, ssh_port = ?, ssh_user = ?, host_type = ?, package_manager = NULLIF(?, ''), os_pretty = NULLIF(?, ''), arch = NULLIF(?, ''), is_proxmox_host = ?, is_self = ?, enabled = ?, notes = ?
+		SET hostname = ?, ssh_port = ?, ssh_user = ?, host_type = ?, package_manager = NULLIF(?, ''), os_pretty = NULLIF(?, ''), arch = NULLIF(?, ''), is_proxmox_host = ?, is_self = ?, enabled = ?, auto_reboot = ?, auto_reboot_countdown_seconds = ?, notes = ?
 		WHERE id = ?
-	`, host.Hostname, host.SSHPort, host.SSHUser, host.Type, host.PackageManager, host.OSPretty, host.Arch, boolInt(host.IsProxmoxHost), boolInt(host.IsSelf), boolInt(host.Enabled), host.Notes, id)
+	`, host.Hostname, host.SSHPort, host.SSHUser, host.Type, host.PackageManager, host.OSPretty, host.Arch, boolInt(host.IsProxmoxHost), boolInt(host.IsSelf), boolInt(host.Enabled), boolInt(host.AutoReboot), normalizeRebootDelay(host.AutoRebootDelay), host.Notes, id)
 	if err != nil {
 		return fmt.Errorf("overwrite host %s: %w", host.Name, err)
 	}

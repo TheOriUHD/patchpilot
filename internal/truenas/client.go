@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-const CoreUnsupportedMessage = "TrueNAS Core is not supported. Use TrueNAS SCALE."
+const CoreUnsupportedMessage = "TrueNAS Core is not supported; use TrueNAS SCALE"
 
 var (
 	// ErrAuth is returned when the API rejects the supplied token.
@@ -212,7 +212,7 @@ func (c *Client) doJSON(ctx context.Context, method string, path string, input a
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrAPI, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return ErrAuth
