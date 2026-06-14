@@ -240,7 +240,7 @@ func (m model) renderLiveRunOverlay(bodyHeight int) string {
 	builder.WriteString("\n")
 	builder.WriteString(m.liveModalKeybinds())
 	modal := m.styles.Card.Width(m.modalWidth()).Height(m.modalHeight(bodyHeight)).Render(builder.String())
-	return lipgloss.Place(m.width, bodyHeight, lipgloss.Center, lipgloss.Center, modal)
+	return lipgloss.Place(m.width, bodyHeight, lipgloss.Center, lipgloss.Center, modal, lipgloss.WithWhitespaceChars(" "))
 }
 
 func (m model) renderRunTree(bodyHeight int) string {

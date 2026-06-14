@@ -365,7 +365,7 @@ func (m model) View() string {
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, m.styles.ErrorText.Render(message))
 	}
 	if m.liveRun != nil && m.liveModalVisible {
-		return m.renderLiveRunOverlay(m.height)
+		return lipgloss.NewStyle().Width(m.width).Height(m.height).Render(m.renderLiveRunOverlay(m.height))
 	}
 
 	tabbar := strings.TrimSuffix(components.RenderTabBar(m.styles, components.TabBarState{Labels: m.tabs, Active: m.activeTab}), "\n")

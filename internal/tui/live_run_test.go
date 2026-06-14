@@ -2,14 +2,18 @@ package tui
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/TheOriUHD/patchpilot/internal/core"
 	"github.com/TheOriUHD/patchpilot/internal/tui/components"
 )
+
+var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
 
 func TestConfirmPendingDismissesBeforeReturningCommand(t *testing.T) {
 	t.Parallel()
@@ -67,9 +71,7 @@ func TestLiveRunVisibleViewBypassesHostConfirmationRender(t *testing.T) {
 	if strings.Contains(view, "Run updates now on") {
 		t.Fatalf("live modal view leaked host confirmation: %q", view)
 	}
-	if expected := m.renderLiveRunOverlay(m.height); view != expected {
-		t.Fatalf("live modal view rendered surrounding tab content; got length %d, want full-screen live modal length %d", len(view), len(expected))
-	}
+	assertFullScreenRender(t, view, m.width, m.height)
 }
 
 func TestMinimizedLiveRunShowsBannerWithoutHostConfirmation(t *testing.T) {
@@ -179,4 +181,18 @@ func liveRunTestModel() model {
 	model.hosts = []core.Host{{ID: 1, Name: "debian", Type: core.HostTypeStandard, Enabled: true, AutoRebootDelay: 30}}
 	model.openLiveRun(core.RunDetail{Run: core.Run{ID: 1, Trigger: core.RunTriggerManual, Status: core.RunStatusRunning, StartedAt: time.Now()}, HostRuns: []core.HostRun{{ID: 10, RunID: 1, HostID: 1, HostName: "debian", Status: core.HostRunStatusRunning}}})
 	return model
+}
+
+func assertFullScreenRender(t *testing.T, output string, width int, height int) {
+	t.Helper()
+	lines := strings.Split(strings.TrimSuffix(output, "\n"), "\n")
+	if len(lines) != height {
+		t.Fatalf("rendered line count = %d, want %d", len(lines), height)
+	}
+	for index, line := range lines {
+		plain := ansiPattern.ReplaceAllString(line, "")
+		if got := lipgloss.Width(plain); got != width {
+			t.Fatalf("line %d width = %d, want %d: %q", index+1, got, width, plain)
+		}
+	}
 }
