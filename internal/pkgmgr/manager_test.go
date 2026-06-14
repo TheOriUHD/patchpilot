@@ -8,12 +8,12 @@ import (
 func TestSudoersEntry(t *testing.T) {
 	t.Parallel()
 
-	paths := map[string]string{"apt-get": "/usr/local/bin/apt-get", "apt": "/bin/apt", "dpkg": "/usr/bin/dpkg", "test": "/bin/test"}
+	paths := map[string]string{"apt-get": "/usr/local/bin/apt-get", "apt": "/bin/apt", "dpkg": "/usr/bin/dpkg", "test": "/bin/test", "systemctl": "/usr/bin/systemctl", "reboot": "/usr/sbin/reboot", "shutdown": "/usr/sbin/shutdown"}
 	entry, err := SudoersEntry("patchpilot", ManagerAPT, paths)
 	if err != nil {
 		t.Fatalf("SudoersEntry() error: %v", err)
 	}
-	for _, want := range []string{"patchpilot ALL=(ALL) NOPASSWD:", "/usr/local/bin/apt-get", "/bin/apt", "/usr/bin/dpkg", "/bin/test"} {
+	for _, want := range []string{"patchpilot ALL=(ALL) NOPASSWD:", "/usr/local/bin/apt-get", "/bin/apt", "/usr/bin/dpkg", "/bin/test", "/usr/bin/systemctl reboot", "/usr/sbin/reboot", "/usr/sbin/shutdown -r now"} {
 		if !strings.Contains(entry, want) {
 			t.Fatalf("entry %q missing %q", entry, want)
 		}
@@ -21,6 +21,20 @@ func TestSudoersEntry(t *testing.T) {
 
 	if _, err := SudoersEntry("patchpilot", ManagerAPT, map[string]string{"apt-get": "apt-get"}); err == nil {
 		t.Fatal("SudoersEntry() expected missing absolute path error")
+	}
+}
+
+func TestRebootCommand(t *testing.T) {
+	t.Parallel()
+
+	command, err := RebootCommand(map[string]string{"systemctl": "/usr/bin/systemctl", "reboot": "/usr/sbin/reboot", "shutdown": "/usr/sbin/shutdown"})
+	if err != nil {
+		t.Fatalf("RebootCommand() error: %v", err)
+	}
+	for _, want := range []string{"sudo -n /usr/bin/systemctl reboot", "sudo -n /usr/sbin/reboot", "sudo -n /usr/sbin/shutdown -r now"} {
+		if !strings.Contains(command, want) {
+			t.Fatalf("RebootCommand() = %q, want %q", command, want)
+		}
 	}
 }
 

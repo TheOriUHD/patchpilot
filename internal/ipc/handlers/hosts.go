@@ -138,6 +138,22 @@ func RegisterHosts(router chi.Router, service *core.HostService, orchestrator *c
 			}
 			writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 		})
+
+		r.Post("/{id}/repair-sudoers", func(w http.ResponseWriter, req *http.Request) {
+			id, err := idParam(req, "id")
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			if rejectHostMutationWhenInFlight(req.Context(), w, orchestrator, id, "cannot repair sudoers while update is in progress") {
+				return
+			}
+			if err := service.RepairSudoers(req.Context(), id); err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		})
 	})
 }
 

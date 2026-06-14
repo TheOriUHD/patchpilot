@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -147,6 +148,56 @@ func TestSettingsServiceRotateKeypairAbortKeepsOldKey(t *testing.T) {
 	}
 }
 
+func TestHostServiceRepairSudoersIdempotent(t *testing.T) {
+	t.Parallel()
+
+	keyStore := remotessh.NewKeyStore(t.TempDir())
+	runner := &fakeSSHRunner{responses: map[string]fakeSSHResponse{
+		"resolve_patchpilot_command": {result: remotessh.CommandResult{Stdout: aptResolvedPathsOutput()}},
+	}}
+	service := NewHostService(&fakeHostStore{hosts: map[int64]Host{1: {ID: 1, Name: "vm1", Hostname: "vm1", SSHUser: "patchpilot", Type: HostTypeStandard, PackageManager: "apt", Enabled: true}}}, nil, keyStore, nil, nil)
+	service.ConnectKey = func(context.Context, string, int, string, golangssh.Signer) (remotessh.Runner, error) {
+		return runner, nil
+	}
+
+	if err := service.RepairSudoers(context.Background(), 1); err != nil {
+		t.Fatalf("RepairSudoers() error: %v", err)
+	}
+	if err := service.RepairSudoers(context.Background(), 1); err != nil {
+		t.Fatalf("RepairSudoers() second run error: %v", err)
+	}
+	if got := runner.countContaining("cat > /etc/sudoers.d/patchpilot"); got != 2 {
+		t.Fatalf("sudoers write count = %d, want 2 idempotent rewrites", got)
+	}
+	for _, want := range []string{"/usr/bin/systemctl reboot", "/usr/sbin/reboot", "/usr/sbin/shutdown -r now"} {
+		if !runner.anyCommandContaining(want) {
+			t.Fatalf("repair command missing %q; commands=%#v", want, runner.commands)
+		}
+	}
+}
+
+func TestHostServiceRebootFriendlySudoError(t *testing.T) {
+	t.Parallel()
+
+	keyStore := remotessh.NewKeyStore(t.TempDir())
+	runner := &fakeSSHRunner{responses: map[string]fakeSSHResponse{
+		"resolve_patchpilot_command": {result: remotessh.CommandResult{Stdout: "systemctl\t/usr/bin/systemctl\nreboot\t/usr/sbin/reboot\nshutdown\t/usr/sbin/shutdown\n"}},
+		"systemctl reboot":           {result: remotessh.CommandResult{Stderr: "sudo: a password is required", ExitCode: 1}, err: errors.New("Process exited with status 1")},
+	}}
+	service := NewHostService(&fakeHostStore{hosts: map[int64]Host{1: {ID: 1, Name: "frigate", Hostname: "frigate", SSHUser: "patchpilot", Type: HostTypeStandard, PackageManager: "apt", Enabled: true}}}, nil, keyStore, nil, nil)
+	service.ConnectKey = func(context.Context, string, int, string, golangssh.Signer) (remotessh.Runner, error) {
+		return runner, nil
+	}
+
+	err := service.RebootHost(context.Background(), 1)
+	if err == nil {
+		t.Fatal("RebootHost() expected error")
+	}
+	if !strings.Contains(err.Error(), "lacks NOPASSWD sudo for reboot commands") || !strings.Contains(err.Error(), "Press Shift+P") {
+		t.Fatalf("RebootHost() error = %q, want friendly repair hint", err)
+	}
+}
+
 func TestOrchestratorOverlapPolicies(t *testing.T) {
 	t.Parallel()
 	hosts := &fakeHostStore{hosts: map[int64]Host{1: {ID: 1, Name: "vm", Type: HostTypeStandard, Enabled: true}}}
@@ -277,10 +328,38 @@ func (s fakeSettingsStore) ConcurrencyEnabled(context.Context) (bool, error) {
 	return s.concurrency, nil
 }
 
-type fakeSSHRunner struct{}
+type fakeSSHResponse struct {
+	result remotessh.CommandResult
+	err    error
+}
 
-func (r *fakeSSHRunner) Run(context.Context, string, []byte) (remotessh.CommandResult, error) {
+type fakeSSHRunner struct {
+	commands  []string
+	responses map[string]fakeSSHResponse
+}
+
+func (r *fakeSSHRunner) Run(_ context.Context, command string, _ []byte) (remotessh.CommandResult, error) {
+	r.commands = append(r.commands, command)
+	for needle, response := range r.responses {
+		if strings.Contains(command, needle) {
+			return response.result, response.err
+		}
+	}
 	return remotessh.CommandResult{}, nil
 }
 
 func (r *fakeSSHRunner) Close() error { return nil }
+
+func (r *fakeSSHRunner) countContaining(needle string) int {
+	count := 0
+	for _, command := range r.commands {
+		if strings.Contains(command, needle) {
+			count++
+		}
+	}
+	return count
+}
+
+func (r *fakeSSHRunner) anyCommandContaining(needle string) bool {
+	return r.countContaining(needle) > 0
+}

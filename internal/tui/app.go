@@ -522,6 +522,13 @@ func (m model) keybinds() []string {
 	return keys
 }
 
+func (m *model) clearConfirmations() {
+	m.pending = pendingAction{}
+	m.schedulePending = schedulePendingAction{}
+	m.settingsConfirm = ""
+	m.liveCancel = false
+}
+
 func loadHostsCmd(ctx context.Context, client *ipc.Client) tea.Cmd {
 	return func() tea.Msg {
 		loadCtx, cancel := context.WithTimeout(ctx, 5*time.Second)

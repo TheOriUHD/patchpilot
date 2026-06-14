@@ -286,6 +286,7 @@ func (m model) filteredLiveLogLines(hostRunID int64) []liveLogEntry {
 }
 
 func (m *model) openLiveRun(detail core.RunDetail) {
+	m.clearConfirmations()
 	m.liveRun = &detail
 	m.liveLogLines = nil
 	m.liveHostIndex = 0

@@ -8,21 +8,70 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/TheOriUHD/patchpilot/internal/core"
+	"github.com/TheOriUHD/patchpilot/internal/tui/components"
 )
 
 func TestConfirmPendingDismissesBeforeReturningCommand(t *testing.T) {
 	t.Parallel()
 
 	m := newModel(context.Background(), "/tmp/patchpilot.sock")
-	m.pending = pendingAction{Kind: "run", Host: core.Host{ID: 42, Name: "debian"}}
+	m.width = 120
+	m.height = 40
+	m.daemonState = components.DaemonUp
+	m.hosts = []core.Host{{ID: 42, Name: "debian", Type: core.HostTypeStandard, Enabled: true}}
 
-	updated, cmd := m.confirmPending()
+	updated, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}})
+	if cmd != nil {
+		t.Fatal("opening confirmation should not return command")
+	}
+	confirming := updated.(model)
+	if !strings.Contains(confirming.View(), "Run updates now on debian? y/n") {
+		t.Fatalf("confirmation modal not visible in rendered view")
+	}
+
+	updated, cmd = confirming.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
 	result := updated.(model)
 	if result.pending.Kind != "" {
 		t.Fatalf("pending action still visible after confirm: %#v", result.pending)
 	}
+	if strings.Contains(result.View(), "Run updates now on debian? y/n") {
+		t.Fatalf("confirmation modal still rendered after confirm")
+	}
 	if cmd == nil {
 		t.Fatal("confirming run should return an action command")
+	}
+}
+
+func TestOpenLiveRunClearsStaleConfirmations(t *testing.T) {
+	t.Parallel()
+
+	m := liveRunTestModel()
+	m.pending = pendingAction{Kind: "run", Host: core.Host{ID: 1, Name: "debian"}}
+	m.schedulePending = schedulePendingAction{Kind: "delete", ID: 1, Name: "weekly"}
+	m.settingsConfirm = "rotate-key"
+	m.liveCancel = true
+	m.openLiveRun(core.RunDetail{Run: core.Run{ID: 2, Trigger: core.RunTriggerManual, Status: core.RunStatusRunning, StartedAt: time.Now()}, HostRuns: []core.HostRun{{ID: 20, RunID: 2, HostID: 1, HostName: "debian", Status: core.HostRunStatusRunning}}})
+
+	if m.pending.Kind != "" || m.schedulePending.Kind != "" || m.settingsConfirm != "" || m.liveCancel {
+		t.Fatalf("confirmations were not cleared: pending=%#v schedule=%#v settings=%q liveCancel=%v", m.pending, m.schedulePending, m.settingsConfirm, m.liveCancel)
+	}
+}
+
+func TestHostDetailRepairSudoersAction(t *testing.T) {
+	t.Parallel()
+
+	m := newModel(context.Background(), "/tmp/patchpilot.sock")
+	m.daemonState = components.DaemonUp
+	m.hosts = []core.Host{{ID: 7, Name: "debian", Type: core.HostTypeStandard, Enabled: true}}
+	m.hostScreen = hostScreenDetail
+
+	updated, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'P'}})
+	result := updated.(model)
+	if cmd != nil {
+		t.Fatal("repair confirmation should not immediately return command")
+	}
+	if result.pending.Kind != "repair-sudoers" {
+		t.Fatalf("pending kind = %q, want repair-sudoers", result.pending.Kind)
 	}
 }
 
@@ -96,7 +145,7 @@ func liveRunTestModel() model {
 	model := newModel(context.Background(), "/tmp/patchpilot.sock")
 	model.width = 120
 	model.height = 40
-	model.daemonState = 1
+	model.daemonState = components.DaemonUp
 	model.hosts = []core.Host{{ID: 1, Name: "debian", Type: core.HostTypeStandard, Enabled: true, AutoRebootDelay: 30}}
 	model.openLiveRun(core.RunDetail{Run: core.Run{ID: 1, Trigger: core.RunTriggerManual, Status: core.RunStatusRunning, StartedAt: time.Now()}, HostRuns: []core.HostRun{{ID: 10, RunID: 1, HostID: 1, HostName: "debian", Status: core.HostRunStatusRunning}}})
 	return model

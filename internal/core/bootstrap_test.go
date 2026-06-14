@@ -14,7 +14,7 @@ func TestBootstrapRollsBackInvalidSudoersBeforeReturning(t *testing.T) {
 	t.Parallel()
 
 	runner := &fakeRunner{responses: map[string]fakeResponse{
-		"resolve_patchpilot_command": {result: remotessh.CommandResult{Stdout: "apt-get\t/usr/bin/apt-get\napt\t/usr/bin/apt\ndpkg\t/usr/bin/dpkg\ntest\t/usr/bin/test\n"}},
+		"resolve_patchpilot_command": {result: remotessh.CommandResult{Stdout: aptResolvedPathsOutput()}},
 		"visudo -cf":                 {result: remotessh.CommandResult{Stderr: "parse error"}, err: errors.New("exit status 1")},
 	}}
 	_, err := BootstrapStandardWithRunner(context.Background(), runner, BootstrapOptions{
@@ -121,10 +121,13 @@ func TestGenerateBootstrapCommandsUsesResolvedPaths(t *testing.T) {
 	t.Parallel()
 
 	commands, err := GenerateBootstrapCommands("ssh-ed25519 AAAA patchpilot", "192.0.2.10", pkgmgr.ManagerAPT, map[string]string{
-		"apt-get": "/opt/bin/apt-get",
-		"apt":     "/opt/bin/apt",
-		"dpkg":    "/opt/bin/dpkg",
-		"test":    "/bin/test",
+		"apt-get":   "/opt/bin/apt-get",
+		"apt":       "/opt/bin/apt",
+		"dpkg":      "/opt/bin/dpkg",
+		"test":      "/bin/test",
+		"systemctl": "/usr/bin/systemctl",
+		"reboot":    "/usr/sbin/reboot",
+		"shutdown":  "/usr/sbin/shutdown",
 	})
 	if err != nil {
 		t.Fatalf("GenerateBootstrapCommands() error: %v", err)
@@ -135,6 +138,15 @@ func TestGenerateBootstrapCommandsUsesResolvedPaths(t *testing.T) {
 	if !strings.Contains(commands.InstallPublicKey, `from="192.0.2.10"`) {
 		t.Fatalf("InstallPublicKey = %q, want hardened from option", commands.InstallPublicKey)
 	}
+	for _, want := range []string{"/usr/bin/systemctl reboot", "/usr/sbin/reboot", "/usr/sbin/shutdown -r now"} {
+		if !strings.Contains(commands.WriteSudoers, want) {
+			t.Fatalf("WriteSudoers = %q, want reboot entry %q", commands.WriteSudoers, want)
+		}
+	}
+}
+
+func aptResolvedPathsOutput() string {
+	return "apt-get\t/usr/bin/apt-get\napt\t/usr/bin/apt\ndpkg\t/usr/bin/dpkg\ntest\t/usr/bin/test\nsystemctl\t/usr/bin/systemctl\nreboot\t/usr/sbin/reboot\nshutdown\t/usr/sbin/shutdown\n"
 }
 
 type fakeResponse struct {

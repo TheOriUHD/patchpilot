@@ -36,20 +36,36 @@ func IsSupported(manager PackageManager) bool {
 
 // RequiredCommands returns executable names that must be resolved on the target host.
 func RequiredCommands(manager PackageManager) ([]string, error) {
+	rebootCommands := RebootCommands()
 	switch manager {
 	case ManagerAPT, ManagerAPTProxmox:
-		return []string{"apt-get", "apt", "dpkg", "test"}, nil
+		return append([]string{"apt-get", "apt", "dpkg", "test"}, rebootCommands...), nil
 	case ManagerDNF:
-		return []string{"dnf", "needs-restarting", "test"}, nil
+		return append([]string{"dnf", "needs-restarting", "test"}, rebootCommands...), nil
 	case ManagerPacman:
-		return []string{"pacman", "test"}, nil
+		return append([]string{"pacman", "test"}, rebootCommands...), nil
 	case ManagerZypper:
-		return []string{"zypper", "test"}, nil
+		return append([]string{"zypper", "test"}, rebootCommands...), nil
 	case ManagerAPK:
-		return []string{"apk", "test"}, nil
+		return append([]string{"apk", "test"}, rebootCommands...), nil
 	default:
 		return nil, fmt.Errorf("unsupported package manager %q", manager)
 	}
+}
+
+// RebootCommands returns reboot-related executable names required for post-update reboot actions.
+func RebootCommands() []string {
+	return []string{"systemctl", "reboot", "shutdown"}
+}
+
+// RebootCommand returns the daemon-issued reboot command, preferring systemd and falling back.
+func RebootCommand(paths map[string]string) (string, error) {
+	for _, name := range RebootCommands() {
+		if paths[name] == "" {
+			return "", fmt.Errorf("missing resolved absolute path for %s", name)
+		}
+	}
+	return fmt.Sprintf("sudo -n %s reboot || sudo -n %s || sudo -n %s -r now", paths["systemctl"], paths["reboot"], paths["shutdown"]), nil
 }
 
 // DryRunCommand returns the update dry-run command for the package manager.

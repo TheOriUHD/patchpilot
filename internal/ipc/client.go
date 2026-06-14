@@ -103,6 +103,11 @@ func (c *Client) RebootHost(ctx context.Context, id int64) error {
 	return c.doJSON(ctx, http.MethodPost, fmt.Sprintf("/api/hosts/%d/reboot", id), nil, nil)
 }
 
+// RepairHostSudoers asks the daemon to rewrite a managed host sudoers entry.
+func (c *Client) RepairHostSudoers(ctx context.Context, id int64) error {
+	return c.doJSON(ctx, http.MethodPost, fmt.Sprintf("/api/hosts/%d/repair-sudoers", id), nil, nil)
+}
+
 // RunHostNow starts a manual single-host run.
 func (c *Client) RunHostNow(ctx context.Context, id int64) (int64, error) {
 	detail, err := c.RunHostNowDetail(ctx, id)

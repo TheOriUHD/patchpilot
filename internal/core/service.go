@@ -108,12 +108,13 @@ type CommitHostInput struct {
 
 // HostService coordinates host inventory, detection, bootstrap, dry-runs, and manual updates.
 type HostService struct {
-	Hosts   HostRepository
-	Audit   AuditRepository
-	Keys    *remotessh.KeyStore
-	Secrets SecretCipher
-	Streams *stream.Hub
-	Logger  *slog.Logger
+	Hosts      HostRepository
+	Audit      AuditRepository
+	Keys       *remotessh.KeyStore
+	Secrets    SecretCipher
+	Streams    *stream.Hub
+	Logger     *slog.Logger
+	ConnectKey SSHRunnerConnector
 
 	mu       sync.Mutex
 	sessions map[string]bootstrapSessionState
@@ -267,16 +268,79 @@ func (s *HostService) RebootHost(ctx context.Context, hostID int64) error {
 	if err != nil {
 		return err
 	}
-	runner, err := remotessh.ConnectKey(ctx, host.Hostname, normalizePort(host.SSHPort), host.SSHUser, keypair.Signer)
+	runner, err := s.connectKey(ctx, host, keypair)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = runner.Close() }()
-	if _, err := runner.Run(ctx, "sudo -n systemctl reboot || sudo -n reboot", nil); err != nil {
+	paths, err := resolveRequiredCommandPaths(ctx, runner, nil, HostFacts{CurrentUID: "0"}, nil, pkgmgr.RebootCommands())
+	if err != nil {
+		return fmt.Errorf("resolve reboot commands on %s: %w", host.Name, err)
+	}
+	command, err := pkgmgr.RebootCommand(paths)
+	if err != nil {
+		return err
+	}
+	result, err := runner.Run(ctx, command, nil)
+	if err != nil {
+		if sudoPasswordRequired(result.Stdout + "\n" + result.Stderr) {
+			return fmt.Errorf("reboot failed: patchpilot user lacks NOPASSWD sudo for reboot commands. This host was onboarded before reboot support was added. Press Shift+P on the host detail screen to repair the sudoers entry")
+		}
 		return fmt.Errorf("reboot host %s: %w", host.Name, err)
 	}
 	s.audit(ctx, "tui", "host.reboot", "host", &host.ID, map[string]any{"name": host.Name})
 	return nil
+}
+
+// RepairSudoers rewrites the managed host sudoers entry using the current whitelist.
+func (s *HostService) RepairSudoers(ctx context.Context, hostID int64) error {
+	host, err := s.Hosts.Get(ctx, hostID)
+	if err != nil {
+		return err
+	}
+	if host.Type != HostTypeStandard || host.IsSelf {
+		return fmt.Errorf("sudoers repair is only supported for standard non-self hosts")
+	}
+	keypair, err := s.Keys.Ensure(ctx)
+	if err != nil {
+		return err
+	}
+	runner, err := s.connectKey(ctx, host, keypair)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = runner.Close() }()
+	manager := pkgmgr.PackageManager(host.PackageManager)
+	paths, err := resolveCommandPaths(ctx, runner, nil, HostFacts{CurrentUID: "0", PackageManager: manager}, manager, nil)
+	if err != nil {
+		return err
+	}
+	commands, err := GenerateBootstrapCommands(keypair.PublicKey, "", manager, paths)
+	if err != nil {
+		return err
+	}
+	repair := "sudo -n sh -c " + shellQuote(commands.WriteSudoers+"\n"+commands.ValidateSudoers)
+	result, err := runner.Run(ctx, repair, nil)
+	if err != nil {
+		if sudoPasswordRequired(result.Stdout + "\n" + result.Stderr) {
+			return fmt.Errorf("repair sudoers failed: patchpilot user cannot update sudoers non-interactively; re-run the host wizard with a privileged account or repair manually")
+		}
+		return fmt.Errorf("repair sudoers on %s: %w", host.Name, err)
+	}
+	s.audit(ctx, "tui", "host.repair_sudoers", "host", &host.ID, map[string]any{"name": host.Name})
+	return nil
+}
+
+func (s *HostService) connectKey(ctx context.Context, host Host, keypair remotessh.KeyPair) (remotessh.Runner, error) {
+	if s.ConnectKey != nil {
+		return s.ConnectKey(ctx, host.Hostname, normalizePort(host.SSHPort), host.SSHUser, keypair.Signer)
+	}
+	return remotessh.ConnectKey(ctx, host.Hostname, normalizePort(host.SSHPort), host.SSHUser, keypair.Signer)
+}
+
+func sudoPasswordRequired(output string) bool {
+	lower := strings.ToLower(output)
+	return strings.Contains(lower, "password is required") || strings.Contains(lower, "a password is required") || strings.Contains(lower, "no tty present") || strings.Contains(lower, "a terminal is required")
 }
 
 type bootstrapSessionState struct {

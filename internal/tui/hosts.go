@@ -196,6 +196,15 @@ func (m model) handleDetailKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, updateHostCmd(m.ctx, m.client, host.ID, input, message)
 		}
 		return m, nil
+	case "P":
+		if host, ok := m.selectedHost(); ok {
+			if m.hostInProgress(host.ID) {
+				m.status = "cannot repair sudoers during update"
+				return m, nil
+			}
+			m.pending = pendingAction{Kind: "repair-sudoers", Host: host}
+		}
+		return m, nil
 	case "x":
 		if host, ok := m.selectedHost(); ok {
 			if m.hostInProgress(host.ID) {
@@ -268,6 +277,8 @@ func (m model) confirmPending() (tea.Model, tea.Cmd) {
 		return m, deleteHostCmd(m.ctx, m.client, action.Host.ID)
 	case "run":
 		return m, runHostCmd(m.ctx, m.client, action.Host.ID)
+	case "repair-sudoers":
+		return m, repairSudoersCmd(m.ctx, m.client, action.Host.ID, action.Host.Name)
 	}
 	return m, nil
 }
@@ -375,7 +386,7 @@ func (m model) renderHostDetail(bodyHeight int) string {
 		if m.hostInProgress(host.ID) {
 			builder.WriteString("\nUpdate in progress: mutating actions disabled. L view live run, K cancel.")
 		} else {
-			builder.WriteString("\nActions: u update  d dry run  n rename  b reboot policy  e enable/disable  x remove  q back")
+			builder.WriteString("\nActions: u update  d dry run  n rename  b reboot policy  P repair sudoers  e enable/disable  x remove  q back")
 		}
 	case 1:
 		builder.WriteString("No host run history yet. Manual runs created here will appear in the Logs milestone view.")
@@ -398,6 +409,8 @@ func (m model) renderConfirm() string {
 		message = fmt.Sprintf("Remove %s from patchpilot? The patchpilot user on the host will be left in place. y/n", m.pending.Host.Name)
 	case "run":
 		message = fmt.Sprintf("Run updates now on %s? y/n", m.pending.Host.Name)
+	case "repair-sudoers":
+		message = fmt.Sprintf("Repair sudoers entry on %s? This will update the NOPASSWD whitelist to include reboot commands. y/n", m.pending.Host.Name)
 	}
 	return m.styles.Card.Width(72).Render(message)
 }
@@ -410,7 +423,7 @@ func (m model) hostKeybinds() []string {
 		return []string{"y confirm", "n cancel"}
 	}
 	if m.hostScreen == hostScreenDetail {
-		return []string{"Tab detail tab", "u update", "d dry run", "b reboot", "n rename", "e toggle", "x remove", "q back"}
+		return []string{"Tab detail tab", "u update", "d dry run", "b reboot", "P repair sudoers", "n rename", "e toggle", "x remove", "q back"}
 	}
 	return []string{"↑/↓ navigate", "Enter detail", "a add", "R run host", "e toggle", "/ filter", "q quit"}
 }
@@ -514,6 +527,15 @@ func runHostCmd(ctx context.Context, client *ipc.Client, id int64) tea.Cmd {
 		defer cancel()
 		detail, err := client.RunHostNowDetail(requestCtx, id)
 		return runStartedMsg{detail: detail, err: err}
+	}
+}
+
+func repairSudoersCmd(ctx context.Context, client *ipc.Client, id int64, name string) tea.Cmd {
+	return func() tea.Msg {
+		requestCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		err := client.RepairHostSudoers(requestCtx, id)
+		return hostMutationMsg{message: "Sudoers repaired on " + name, err: err}
 	}
 }
 
