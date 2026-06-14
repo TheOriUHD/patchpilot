@@ -285,7 +285,7 @@ func (m model) filteredLiveLogLines(hostRunID int64) []liveLogEntry {
 	return filtered
 }
 
-func (m *model) openLiveRun(detail core.RunDetail) {
+func (m *model) openLiveRun(detail core.RunDetail) tea.Cmd {
 	logTUIDebugf("openLiveRun called")
 	m.clearConfirmations()
 	m.liveRun = &detail
@@ -301,6 +301,7 @@ func (m *model) openLiveRun(detail core.RunDetail) {
 	m.liveAvailableRunID = detail.Run.ID
 	m.runTreeDetail = nil
 	m.runTreeLogs = nil
+	return tea.ClearScreen
 }
 
 func (m model) handleLiveRunKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -327,12 +328,12 @@ func (m model) handleLiveRunKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.liveCompleted {
 			m.liveModalVisible = false
 			m.liveMinimized = false
-			return m, nil
+			return m, tea.ClearScreen
 		}
 		m.liveModalVisible = false
 		m.liveMinimized = true
 		m.runBanner = "⟳ Run in progress on " + m.liveRunHostLabel() + " — press L to view"
-		return m, nil
+		return m, tea.ClearScreen
 	case "K":
 		if !m.liveCompleted {
 			m.liveCancel = true
@@ -367,7 +368,7 @@ func (m model) handleLiveRunKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.liveCompleted {
 			m.liveModalVisible = false
 			m.liveMinimized = false
-			return m, nil
+			return m, tea.ClearScreen
 		}
 	}
 	return m, nil

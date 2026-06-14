@@ -54,7 +54,7 @@ func TestOpenLiveRunClearsStaleConfirmations(t *testing.T) {
 	m.schedulePending = schedulePendingAction{Kind: "delete", ID: 1, Name: "weekly"}
 	m.settingsConfirm = "rotate-key"
 	m.liveCancel = true
-	m.openLiveRun(core.RunDetail{Run: core.Run{ID: 2, Trigger: core.RunTriggerManual, Status: core.RunStatusRunning, StartedAt: time.Now()}, HostRuns: []core.HostRun{{ID: 20, RunID: 2, HostID: 1, HostName: "debian", Status: core.HostRunStatusRunning}}})
+	_ = m.openLiveRun(core.RunDetail{Run: core.Run{ID: 2, Trigger: core.RunTriggerManual, Status: core.RunStatusRunning, StartedAt: time.Now()}, HostRuns: []core.HostRun{{ID: 20, RunID: 2, HostID: 1, HostName: "debian", Status: core.HostRunStatusRunning}}})
 
 	if m.pending.Kind != "" || m.schedulePending.Kind != "" || m.settingsConfirm != "" || m.liveCancel {
 		t.Fatalf("confirmations were not cleared: pending=%#v schedule=%#v settings=%q liveCancel=%v", m.pending, m.schedulePending, m.settingsConfirm, m.liveCancel)
@@ -179,7 +179,7 @@ func liveRunTestModel() model {
 	model.height = 40
 	model.daemonState = components.DaemonUp
 	model.hosts = []core.Host{{ID: 1, Name: "debian", Type: core.HostTypeStandard, Enabled: true, AutoRebootDelay: 30}}
-	model.openLiveRun(core.RunDetail{Run: core.Run{ID: 1, Trigger: core.RunTriggerManual, Status: core.RunStatusRunning, StartedAt: time.Now()}, HostRuns: []core.HostRun{{ID: 10, RunID: 1, HostID: 1, HostName: "debian", Status: core.HostRunStatusRunning}}})
+	_ = model.openLiveRun(core.RunDetail{Run: core.Run{ID: 1, Trigger: core.RunTriggerManual, Status: core.RunStatusRunning, StartedAt: time.Now()}, HostRuns: []core.HostRun{{ID: 10, RunID: 1, HostID: 1, HostName: "debian", Status: core.HostRunStatusRunning}}})
 	return model
 }
 

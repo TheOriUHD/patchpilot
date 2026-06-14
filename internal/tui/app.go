@@ -269,17 +269,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = typed.err.Error()
 			return m, nil
 		}
-		m.openLiveRun(typed.detail)
+		clearCmd := m.openLiveRun(typed.detail)
 		m.status = fmt.Sprintf("Run %d %s", typed.detail.Run.ID, typed.detail.Run.Status)
-		return m, tea.Batch(m.startRunStream(typed.detail.Run.ID), loadRunsCmd(m.ctx, m.client))
+		return m, tea.Batch(clearCmd, m.startRunStream(typed.detail.Run.ID), loadRunsCmd(m.ctx, m.client))
 	case runDetailLoadedMsg:
 		if typed.err != nil {
 			m.status = typed.err.Error()
 			return m, nil
 		}
 		if typed.detail.Run.Status == core.RunStatusRunning || typed.detail.Run.Status == core.RunStatusQueued {
-			m.openLiveRun(typed.detail)
-			return m, m.startRunStream(typed.detail.Run.ID)
+			clearCmd := m.openLiveRun(typed.detail)
+			return m, tea.Batch(clearCmd, m.startRunStream(typed.detail.Run.ID))
 		}
 		m.runTreeDetail = &typed.detail
 		m.runTreeLogs = typed.logs
