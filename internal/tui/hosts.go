@@ -43,6 +43,7 @@ type dryRunLoadedMsg struct {
 }
 
 func (m model) handleHostsKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	logTUIDebugf("handleHostsKey: key=%q pending=%q", key.String(), m.pending.Kind)
 	if m.hostScreen == hostScreenWizard {
 		return m.handleWizardKey(key)
 	}
@@ -268,6 +269,7 @@ func (m model) handleRenameKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m model) confirmPending() (tea.Model, tea.Cmd) {
 	action := m.pending
+	logTUIDebugf("confirmPending: kind=%q", action.Kind)
 	m.pending = pendingAction{}
 	switch action.Kind {
 	case "toggle":

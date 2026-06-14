@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -357,6 +358,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) View() string {
+	logTUIDebugf("View frame: liveRun=%v liveModalVisible=%v liveCompleted=%v pending.Kind=%q activeTab=%d hostScreen=%d width=%d height=%d logViewer=%v runBanner=%q",
+		m.liveRun != nil, m.liveModalVisible, m.liveCompleted, m.pending.Kind, m.activeTab, m.hostScreen, m.width, m.height, m.logViewer != nil, m.runBanner)
 	if m.width == 0 || m.height == 0 {
 		return ""
 	}
@@ -392,6 +395,7 @@ func (m model) View() string {
 }
 
 func (m model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	logTUIDebugf("handleKey: key=%q liveModalVisible=%v", key.String(), m.liveModalVisible)
 	if m.logViewer != nil {
 		return m.handleHistoryLogViewerKey(key)
 	}
@@ -528,6 +532,13 @@ func (m *model) clearConfirmations() {
 	m.schedulePending = schedulePendingAction{}
 	m.settingsConfirm = ""
 	m.liveCancel = false
+}
+
+func logTUIDebugf(format string, args ...any) {
+	if file, err := os.OpenFile("/tmp/patchpilot-tui.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+		_, _ = fmt.Fprintf(file, format+"\n", args...)
+		_ = file.Close()
+	}
 }
 
 func loadHostsCmd(ctx context.Context, client *ipc.Client) tea.Cmd {
