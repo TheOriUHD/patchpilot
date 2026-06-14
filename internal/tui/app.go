@@ -364,6 +364,9 @@ func (m model) View() string {
 		message := fmt.Sprintf("Terminal too small (need %dx%d, current %dx%d)", minWidth, minHeight, m.width, m.height)
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, m.styles.ErrorText.Render(message))
 	}
+	if m.liveRun != nil && m.liveModalVisible {
+		return m.renderLiveRunOverlay(m.height)
+	}
 
 	tabbar := strings.TrimSuffix(components.RenderTabBar(m.styles, components.TabBarState{Labels: m.tabs, Active: m.activeTab}), "\n")
 	status := components.RenderStatusBar(m.styles, components.StatusBarState{
@@ -383,8 +386,6 @@ func (m model) View() string {
 	}
 	if m.logViewer != nil {
 		bodyContent = m.renderHistoryLogViewer(bodyHeight)
-	} else if m.liveRun != nil && m.liveModalVisible {
-		bodyContent = m.renderLiveRunOverlay(bodyHeight)
 	}
 	body := lipgloss.NewStyle().Width(m.width).Height(bodyHeight).Render(bodyContent)
 	return lipgloss.JoinVertical(lipgloss.Left, tabbar, body, status)

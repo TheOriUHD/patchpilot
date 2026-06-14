@@ -57,6 +57,36 @@ func TestOpenLiveRunClearsStaleConfirmations(t *testing.T) {
 	}
 }
 
+func TestLiveRunVisibleViewBypassesHostConfirmationRender(t *testing.T) {
+	t.Parallel()
+
+	m := liveRunTestModel()
+	m.activeTab = 0
+	m.pending = pendingAction{Kind: "run", Host: core.Host{ID: 1, Name: "debian"}}
+	view := m.View()
+	if strings.Contains(view, "Run updates now on") {
+		t.Fatalf("live modal view leaked host confirmation: %q", view)
+	}
+	if expected := m.renderLiveRunOverlay(m.height); view != expected {
+		t.Fatalf("live modal view rendered surrounding tab content; got length %d, want full-screen live modal length %d", len(view), len(expected))
+	}
+}
+
+func TestMinimizedLiveRunShowsBannerWithoutHostConfirmation(t *testing.T) {
+	t.Parallel()
+
+	m := liveRunTestModel()
+	updated, _ := m.handleLiveRunKey(tea.KeyMsg{Type: tea.KeyEsc})
+	minimized := updated.(model)
+	view := minimized.View()
+	if !strings.Contains(view, "press L to view") {
+		t.Fatalf("minimized live run view missing banner: %q", view)
+	}
+	if strings.Contains(view, "Run updates now on") {
+		t.Fatalf("minimized live run view leaked host confirmation: %q", view)
+	}
+}
+
 func TestHostDetailRepairSudoersAction(t *testing.T) {
 	t.Parallel()
 
