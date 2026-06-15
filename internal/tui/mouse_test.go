@@ -325,6 +325,61 @@ func TestRowHoverAndSelectionBothRender(t *testing.T) {
 	}
 }
 
+func TestSyntheticMouseMotionHoverRows(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		prepare      func(model) model
+		action       regionAction
+		index        int
+		wantHost     int
+		wantSchedule int
+		wantRun      int
+	}{
+		{
+			name: "hosts",
+			prepare: func(m model) model {
+				m.hosts = []core.Host{{ID: 1, Name: "alpha", Type: core.HostTypeStandard, Enabled: true}, {ID: 2, Name: "bravo", Type: core.HostTypeStandard, Enabled: true}}
+				return m
+			},
+			action: regionActionHostRow, index: 1, wantHost: 1, wantSchedule: -1, wantRun: -1,
+		},
+		{
+			name: "schedules",
+			prepare: func(m model) model {
+				m.activeTab = 1
+				m.schedules = []core.Schedule{{ID: 1, Name: "daily", Frequency: core.FrequencyDaily}, {ID: 2, Name: "weekly", Frequency: core.FrequencyWeekly}}
+				return m
+			},
+			action: regionActionScheduleRow, index: 1, wantHost: -1, wantSchedule: 1, wantRun: -1,
+		},
+		{
+			name: "runs",
+			prepare: func(m model) model {
+				m.activeTab = 2
+				m.runs = []core.Run{{ID: 1, Trigger: core.RunTriggerManual, Status: core.RunStatusSuccess, StartedAt: time.Now()}, {ID: 2, Trigger: core.RunTriggerManual, Status: core.RunStatusSuccess, StartedAt: time.Now()}}
+				return m
+			},
+			action: regionActionRunRow, index: 1, wantHost: -1, wantSchedule: -1, wantRun: 1,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			m := test.prepare(mouseTestModel())
+			_ = m.View()
+			x, y := regionCenter(t, m, test.action, test.index, "")
+			updated, _ := m.handleMouse(tea.MouseMsg{X: x, Y: y, Action: tea.MouseActionMotion, Button: tea.MouseButtonNone})
+			m = updated.(model)
+			if m.hoveredHost != test.wantHost || m.hoveredSchedule != test.wantSchedule || m.hoveredRun != test.wantRun {
+				t.Fatalf("hover state host=%d schedule=%d run=%d, want %d/%d/%d", m.hoveredHost, m.hoveredSchedule, m.hoveredRun, test.wantHost, test.wantSchedule, test.wantRun)
+			}
+		})
+	}
+}
+
 func TestMouseClickUnregisteredAreaNoHit(t *testing.T) {
 	t.Parallel()
 

@@ -100,6 +100,50 @@ func TestRebootRequiredCommand(t *testing.T) {
 	}
 }
 
+func TestVerifyCommandBoundedSudoOutput(t *testing.T) {
+	t.Parallel()
+
+	command, err := VerifyCommand(ManagerAPT, map[string]string{"apt-get": "/usr/bin/apt-get"})
+	if err != nil {
+		t.Fatalf("VerifyCommand() error: %v", err)
+	}
+	for _, want := range []string{"sudo -n /usr/bin/apt-get --version", "2>&1", "head -n 1", "code=$?", "exit \"$code\""} {
+		if !strings.Contains(command, want) {
+			t.Fatalf("VerifyCommand() = %q, want substring %q", command, want)
+		}
+	}
+	if command == "sudo -n /usr/bin/apt-get --version" {
+		t.Fatalf("VerifyCommand() returned old unbounded command")
+	}
+}
+
+func TestVerifyCommandAllManagersBoundOutput(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		manager PackageManager
+		paths   map[string]string
+	}{
+		{ManagerAPT, map[string]string{"apt-get": "/usr/bin/apt-get"}},
+		{ManagerDNF, map[string]string{"dnf": "/usr/bin/dnf"}},
+		{ManagerPacman, map[string]string{"pacman": "/usr/bin/pacman"}},
+		{ManagerZypper, map[string]string{"zypper": "/usr/bin/zypper"}},
+		{ManagerAPK, map[string]string{"apk": "/sbin/apk"}},
+	}
+	for _, test := range tests {
+		t.Run(string(test.manager), func(t *testing.T) {
+			t.Parallel()
+			command, err := VerifyCommand(test.manager, test.paths)
+			if err != nil {
+				t.Fatalf("VerifyCommand() error: %v", err)
+			}
+			if !strings.Contains(command, "sudo -n") || !strings.Contains(command, "head -n 1") || !strings.Contains(command, "exit \"$code\"") {
+				t.Fatalf("VerifyCommand() = %q, want bounded sudo probe", command)
+			}
+		})
+	}
+}
+
 func TestParseDryRunOutput(t *testing.T) {
 	t.Parallel()
 

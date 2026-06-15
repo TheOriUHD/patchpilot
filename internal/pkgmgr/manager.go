@@ -108,18 +108,22 @@ func UpdateCommand(manager PackageManager, paths map[string]string) (string, err
 func VerifyCommand(manager PackageManager, paths map[string]string) (string, error) {
 	switch manager {
 	case ManagerAPT, ManagerAPTProxmox:
-		return fmt.Sprintf("sudo -n %s --version", paths["apt-get"]), nil
+		return boundedSudoVersionCommand(paths["apt-get"]), nil
 	case ManagerDNF:
-		return fmt.Sprintf("sudo -n %s --version", paths["dnf"]), nil
+		return boundedSudoVersionCommand(paths["dnf"]), nil
 	case ManagerPacman:
-		return fmt.Sprintf("sudo -n %s --version", paths["pacman"]), nil
+		return boundedSudoVersionCommand(paths["pacman"]), nil
 	case ManagerZypper:
-		return fmt.Sprintf("sudo -n %s --version", paths["zypper"]), nil
+		return boundedSudoVersionCommand(paths["zypper"]), nil
 	case ManagerAPK:
-		return fmt.Sprintf("sudo -n %s --version", paths["apk"]), nil
+		return boundedSudoVersionCommand(paths["apk"]), nil
 	default:
 		return "", fmt.Errorf("unsupported package manager %q", manager)
 	}
+}
+
+func boundedSudoVersionCommand(path string) string {
+	return fmt.Sprintf("out=$(sudo -n %s --version 2>&1); code=$?; printf '%%s\\n' \"$out\" | head -n 1; exit \"$code\"", path)
 }
 
 // RebootRequiredCommand returns a command that exits 0 when a reboot is required and non-zero otherwise.

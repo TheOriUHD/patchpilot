@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -143,6 +144,33 @@ func TestLiveRunCompletionState(t *testing.T) {
 	}
 	if summary := m.liveCompletionSummary(); !strings.Contains(summary, "Completed") {
 		t.Fatalf("completion summary = %q, want Completed", summary)
+	}
+}
+
+func TestLiveRunLogViewportClampsNoisyOutput(t *testing.T) {
+	t.Parallel()
+
+	m := liveRunTestModel()
+	for index := 0; index < 80; index++ {
+		line := fmt.Sprintf("line %02d %s", index, strings.Repeat("apt-module ", 40))
+		if index == 79 {
+			line = "final " + strings.Repeat("界", 80)
+		}
+		m.liveLogLines = append(m.liveLogLines, liveLogEntry{hostRunID: 10, hostName: "debian", line: line})
+	}
+
+	rendered := m.renderLiveRunOverlay(30)
+	if height := lipgloss.Height(rendered); height != 30 {
+		t.Fatalf("live modal height = %d, want 30", height)
+	}
+	for index, line := range strings.Split(strings.TrimSuffix(rendered, "\n"), "\n") {
+		plain := ansiPattern.ReplaceAllString(line, "")
+		if width := lipgloss.Width(plain); width > m.width {
+			t.Fatalf("line %d width = %d, want <= %d: %q", index+1, width, m.width, plain)
+		}
+	}
+	if strings.Contains(rendered, strings.Repeat("apt-module ", 20)) {
+		t.Fatalf("live modal leaked unbounded apt output: %s", rendered)
 	}
 }
 

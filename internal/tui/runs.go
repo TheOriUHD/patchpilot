@@ -235,14 +235,14 @@ func (m model) renderLiveRunOverlay(bodyHeight int) string {
 	builder.WriteString(m.styles.MutedText.Render(strings.Repeat("─", max(20, m.modalWidth()-4))))
 	builder.WriteByte('\n')
 	logHeight := max(6, m.modalHeight(bodyHeight)-10)
-	logLines := m.filteredLiveLogLines(0)
-	start := max(0, len(logLines)-logHeight-m.liveScrollOffset)
-	end := min(len(logLines), start+logHeight)
-	for _, entry := range logLines[start:end] {
-		builder.WriteString(truncate(entry.line, max(20, m.modalWidth()-6)))
-		builder.WriteByte('\n')
+	logEntries := m.filteredLiveLogLines(0)
+	logLines := make([]string, 0, len(logEntries))
+	for _, entry := range logEntries {
+		logLines = append(logLines, entry.line)
 	}
-	for lineCount := end - start; lineCount < logHeight; lineCount++ {
+	visibleLogs := RenderClampedLines(ViewportInput{Lines: logLines, Width: max(20, m.modalWidth()-6), Height: logHeight, ScrollOffset: m.liveScrollOffset})
+	for _, line := range visibleLogs {
+		builder.WriteString(line)
 		builder.WriteByte('\n')
 	}
 	builder.WriteString(m.styles.MutedText.Render(strings.Repeat("─", max(20, m.modalWidth()-4))))

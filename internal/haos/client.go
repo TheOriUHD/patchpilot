@@ -8,9 +8,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
+
+const errorBodyLimit = 200
 
 var (
 	// ErrAuth is returned when Home Assistant rejects the supplied LLAT.
@@ -25,6 +28,28 @@ type Client struct {
 	Token        string
 	HTTPClient   *http.Client
 	PollInterval time.Duration
+}
+
+// HTTPError describes a non-2xx response from Home Assistant.
+type HTTPError struct {
+	Cause      error
+	Method     string
+	Path       string
+	Status     string
+	StatusCode int
+	Body       string
+}
+
+func (e *HTTPError) Error() string {
+	message := strings.TrimSpace(fmt.Sprintf("%s at %s", e.Status, e.Path))
+	if e.Body != "" {
+		message += ": " + e.Body
+	}
+	return message
+}
+
+func (e *HTTPError) Unwrap() error {
+	return e.Cause
 }
 
 // Info contains HAOS component versions.
@@ -62,7 +87,7 @@ func New(baseURL string, token string) *Client {
 func (c *Client) Verify(ctx context.Context) (Info, error) {
 	supervisor, err := c.componentInfo(ctx, "supervisor")
 	if err != nil {
-		return Info{}, err
+		return Info{}, c.diagnoseSupervisorProxy(ctx, err)
 	}
 	core, err := c.componentInfo(ctx, "core")
 	if err != nil {
@@ -208,12 +233,12 @@ func (c *Client) doJSON(ctx context.Context, method string, path string, input a
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		_, _ = io.Copy(io.Discard, resp.Body)
-		return ErrAuth
+		body := readErrorBody(resp.Body)
+		return &HTTPError{Cause: ErrAuth, Method: method, Path: c.apiPath(path), Status: resp.Status, StatusCode: resp.StatusCode, Body: body}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return fmt.Errorf("%w: %s %s", ErrAPI, resp.Status, strings.TrimSpace(string(body)))
+		body := readErrorBody(resp.Body)
+		return &HTTPError{Cause: ErrAPI, Method: method, Path: c.apiPath(path), Status: resp.Status, StatusCode: resp.StatusCode, Body: body}
 	}
 	if output == nil {
 		_, _ = io.Copy(io.Discard, resp.Body)
@@ -226,11 +251,71 @@ func (c *Client) doJSON(ctx context.Context, method string, path string, input a
 }
 
 func (c *Client) url(path string) string {
+	return c.BaseURL + c.apiPath(path)
+}
+
+func (c *Client) apiPath(path string) string {
 	path = strings.TrimLeft(path, "/")
 	if strings.HasSuffix(c.BaseURL, "/api/hassio") {
-		return c.BaseURL + "/" + path
+		return "/" + path
 	}
-	return c.BaseURL + "/api/hassio/" + path
+	return "/api/hassio/" + path
+}
+
+func (c *Client) restAPIURL() string {
+	base := strings.TrimSuffix(c.BaseURL, "/api/hassio")
+	return strings.TrimRight(base, "/") + "/api/"
+}
+
+func (c *Client) diagnoseSupervisorProxy(ctx context.Context, err error) error {
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusNotFound || !strings.HasPrefix(httpErr.Path, "/api/hassio/") {
+		return err
+	}
+	if probeErr := c.probeRESTAPI(ctx); probeErr == nil {
+		return fmt.Errorf("%w: %s: this Home Assistant instance does not expose the Supervisor proxy. HAOS mode requires Home Assistant OS or a Supervised install", ErrAPI, httpErr.Error())
+	} else {
+		return fmt.Errorf("%w: %s; Home Assistant REST probe at /api/ also failed: %v", ErrAPI, httpErr.Error(), probeErr)
+	}
+}
+
+func (c *Client) probeRESTAPI(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.restAPIURL(), nil)
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	if c.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
+	httpClient := c.HTTPClient
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrAPI, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		body := readErrorBody(resp.Body)
+		path := "/api/"
+		if parsed, err := url.Parse(c.restAPIURL()); err == nil {
+			path = parsed.Path
+		}
+		return &HTTPError{Cause: ErrAPI, Method: http.MethodGet, Path: path, Status: resp.Status, StatusCode: resp.StatusCode, Body: body}
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return nil
+}
+
+func readErrorBody(reader io.Reader) string {
+	body, _ := io.ReadAll(io.LimitReader(reader, errorBodyLimit+1))
+	trimmed := strings.TrimSpace(string(body))
+	if len(trimmed) > errorBodyLimit {
+		return trimmed[:errorBodyLimit]
+	}
+	return trimmed
 }
 
 func unwrapData(payload map[string]any) map[string]any {

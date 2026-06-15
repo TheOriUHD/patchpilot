@@ -7,11 +7,14 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/TheOriUHD/patchpilot/internal/pkgmgr"
 	remotessh "github.com/TheOriUHD/patchpilot/internal/ssh"
 	"github.com/TheOriUHD/patchpilot/internal/stream"
 )
+
+var patchpilotReconnectDelays = []time.Duration{500 * time.Millisecond, time.Second, 1500 * time.Millisecond, 2 * time.Second, 3 * time.Second}
 
 // HostRepository is the storage interface required by host services.
 type HostRepository interface {
@@ -332,10 +335,37 @@ func (s *HostService) RepairSudoers(ctx context.Context, hostID int64) error {
 }
 
 func (s *HostService) connectKey(ctx context.Context, host Host, keypair remotessh.KeyPair) (remotessh.Runner, error) {
+	return s.connectKeyTo(ctx, host.Hostname, normalizePort(host.SSHPort), host.SSHUser, keypair)
+}
+
+func (s *HostService) connectKeyTo(ctx context.Context, hostname string, port int, user string, keypair remotessh.KeyPair) (remotessh.Runner, error) {
 	if s.ConnectKey != nil {
-		return s.ConnectKey(ctx, host.Hostname, normalizePort(host.SSHPort), host.SSHUser, keypair.Signer)
+		return s.ConnectKey(ctx, hostname, port, user, keypair.Signer)
 	}
-	return remotessh.ConnectKey(ctx, host.Hostname, normalizePort(host.SSHPort), host.SSHUser, keypair.Signer)
+	return remotessh.ConnectKey(ctx, hostname, port, user, keypair.Signer)
+}
+
+func (s *HostService) reconnectPatchpilotWithRetry(ctx context.Context, hostname string, port int, keypair remotessh.KeyPair, reporter BootstrapReporter, delays []time.Duration) (remotessh.Runner, error) {
+	reporter = nonNilReporter(reporter)
+	attempts := len(delays) + 1
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		reporter.Report(BootstrapEvent{Step: "Reconnecting as patchpilot with key", Status: BootstrapStepRunning, Message: fmt.Sprintf("attempt %d/%d", attempt, attempts)})
+		runner, err := s.connectKeyTo(ctx, hostname, port, "patchpilot", keypair)
+		if err == nil {
+			return runner, nil
+		}
+		lastErr = err
+		if attempt == attempts {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(delays[attempt-1]):
+		}
+	}
+	return nil, lastErr
 }
 
 func sudoPasswordRequired(output string) bool {
@@ -417,8 +447,7 @@ func (s *HostService) runBootstrapSession(ctx context.Context, sessionID string,
 	}
 	resolvedPaths = bootstrapResult.ResolvedPaths
 
-	reporter.Report(BootstrapEvent{Step: "Reconnecting as patchpilot with key", Status: BootstrapStepRunning, Message: "verifying new login path"})
-	patchpilotRunner, err := remotessh.ConnectKey(ctx, input.Hostname, normalizePort(input.SSHPort), "patchpilot", keypair.Signer)
+	patchpilotRunner, err := s.reconnectPatchpilotWithRetry(ctx, input.Hostname, normalizePort(input.SSHPort), keypair, reporter, patchpilotReconnectDelays)
 	if err != nil {
 		reportError("Reconnecting as patchpilot with key", err)
 		return

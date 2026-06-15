@@ -419,7 +419,7 @@ func (m model) renderWizard(bodyHeight int) string {
 		if m.wizard.isAPI() {
 			content = m.styles.Card.Width(72).Render(m.spinner.View() + " Calling update-check API")
 		} else {
-			content = m.renderWizardBootstrap()
+			content = m.renderWizardBootstrap(bodyHeight)
 		}
 	case wizardStepReview:
 		content = m.renderWizardReview()
@@ -550,10 +550,11 @@ func (m model) renderWizardPreinstall() string {
 	return m.styles.Card.Width(76).Render(m.styles.CardTitle.Render("Pre-install mode") + "\n\nPackage manager: " + string(manager) + "\n\n" + strings.Join(commands, "\n") + "\n\nAfter installing the key and sudoers entry, press r to retry detection.")
 }
 
-func (m model) renderWizardBootstrap() string {
-	var builder strings.Builder
-	builder.WriteString(m.styles.CardTitle.Render("Bootstrap progress"))
-	builder.WriteString("\n\n")
+func (m model) renderWizardBootstrap(bodyHeight int) string {
+	lines := make([]string, 0, max(1, len(m.wizard.events)))
+	if len(m.wizard.events) == 0 {
+		lines = append(lines, m.spinner.View()+" Waiting for bootstrap stream")
+	}
 	for _, event := range m.wizard.events {
 		symbol := theme.SymbolPending
 		if event.Status == core.BootstrapStepSuccess {
@@ -562,18 +563,19 @@ func (m model) renderWizardBootstrap() string {
 		if event.Status == core.BootstrapStepFailed {
 			symbol = theme.SymbolError
 		}
-		builder.WriteString(symbol)
-		builder.WriteByte(' ')
-		builder.WriteString(event.Step)
+		line := symbol + " " + event.Step
 		if event.Message != "" {
-			builder.WriteString(" - ")
-			builder.WriteString(event.Message)
+			line += " - " + event.Message
 		}
-		builder.WriteByte('\n')
+		lines = append(lines, line)
 	}
-	if len(m.wizard.events) == 0 {
-		builder.WriteString(m.spinner.View())
-		builder.WriteString(" Waiting for bootstrap stream")
+	visible := RenderClampedLines(ViewportInput{Lines: lines, Width: 72, Height: max(1, bodyHeight-7)})
+	var builder strings.Builder
+	builder.WriteString(m.styles.CardTitle.Render("Bootstrap progress"))
+	builder.WriteString("\n\n")
+	for _, line := range visible {
+		builder.WriteString(line)
+		builder.WriteByte('\n')
 	}
 	return m.styles.Card.Width(78).Render(builder.String())
 }

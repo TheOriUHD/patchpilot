@@ -260,9 +260,12 @@ func normalizeAPIEndpoint(endpoint string) string {
 
 func apiDiagnosis(err error) string {
 	if errors.Is(err, truenas.ErrAuth) || errors.Is(err, haos.ErrAuth) {
+		if err.Error() != "auth failed" {
+			return err.Error()
+		}
 		return "auth failed"
 	}
-	return "API call failed"
+	return err.Error()
 }
 
 func haosComponents(components ...haos.Component) []APIComponentStatus {

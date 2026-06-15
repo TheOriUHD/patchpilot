@@ -198,6 +198,54 @@ func TestHostServiceRebootFriendlySudoError(t *testing.T) {
 	}
 }
 
+func TestReconnectPatchpilotRetries(t *testing.T) {
+	t.Parallel()
+
+	keypair, err := remotessh.GenerateInMemory()
+	if err != nil {
+		t.Fatalf("GenerateInMemory() error: %v", err)
+	}
+	service := NewHostService(nil, nil, nil, nil, nil)
+	attempts := 0
+	service.ConnectKey = func(context.Context, string, int, string, golangssh.Signer) (remotessh.Runner, error) {
+		attempts++
+		if attempts < 3 {
+			return nil, errors.New("not ready")
+		}
+		return &fakeSSHRunner{}, nil
+	}
+	reporter := &collectingBootstrapReporter{}
+	runner, err := service.reconnectPatchpilotWithRetry(context.Background(), "host", 22, keypair, reporter, []time.Duration{0, 0, 0})
+	if err != nil {
+		t.Fatalf("reconnectPatchpilotWithRetry() error: %v", err)
+	}
+	if runner == nil || attempts != 3 {
+		t.Fatalf("runner=%#v attempts=%d, want runner after 3 attempts", runner, attempts)
+	}
+	if len(reporter.events) != 3 || !strings.Contains(reporter.events[1].Message, "attempt 2/4") {
+		t.Fatalf("events = %#v, want attempt progress", reporter.events)
+	}
+}
+
+func TestReconnectPatchpilotHonorsContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	keypair, err := remotessh.GenerateInMemory()
+	if err != nil {
+		t.Fatalf("GenerateInMemory() error: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	service := NewHostService(nil, nil, nil, nil, nil)
+	service.ConnectKey = func(context.Context, string, int, string, golangssh.Signer) (remotessh.Runner, error) {
+		cancel()
+		return nil, errors.New("not ready")
+	}
+	_, err = service.reconnectPatchpilotWithRetry(ctx, "host", 22, keypair, nil, []time.Duration{time.Hour})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+}
+
 func TestOrchestratorOverlapPolicies(t *testing.T) {
 	t.Parallel()
 	hosts := &fakeHostStore{hosts: map[int64]Host{1: {ID: 1, Name: "vm", Type: HostTypeStandard, Enabled: true}}}
@@ -313,6 +361,14 @@ func (s *fakeAuditStore) Create(_ context.Context, event AuditEvent) error {
 
 type fakeSettingsStore struct {
 	concurrency bool
+}
+
+type collectingBootstrapReporter struct {
+	events []BootstrapEvent
+}
+
+func (r *collectingBootstrapReporter) Report(event BootstrapEvent) {
+	r.events = append(r.events, event)
 }
 
 func (s fakeSettingsStore) GetBool(context.Context, string, bool) (bool, error) {
