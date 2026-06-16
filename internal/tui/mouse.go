@@ -271,12 +271,15 @@ func (m model) renderContextMenuOverlay(body string, bodyHeight int) string {
 	for _, item := range m.contextMenu.Items {
 		menu.Items = append(menu.Items, components.MenuItem{Label: item.Label, Disabled: item.Disabled})
 	}
-	rendered := components.RenderContextMenu(m.styles, menu)
-	menuLines := strings.Split(rendered, "\n")
-	menuY := max(0, min(bodyHeight-1, m.contextMenu.Y-m.renderBodyY))
-	menuX := max(0, min(max(0, m.width-1), m.contextMenu.X))
+	rendered, itemYOffsets, contentX, boxWidth := components.RenderContextMenuWithOffsets(m.styles, menu)
+	boxHeight := lipgloss.Height(rendered)
+	menuY := max(0, min(max(0, bodyHeight-boxHeight), m.contextMenu.Y-m.renderBodyY))
+	menuX := max(0, min(max(0, m.width-boxWidth), m.contextMenu.X))
 	for index, item := range m.contextMenu.Items {
-		m.regions.Add(region{ID: fmt.Sprintf("menu:%d", index), Rect: Rect{X: menuX, Y: m.renderBodyY + menuY + 2 + index, Width: lipgloss.Width(menuLines[min(len(menuLines)-1, 2+index)]), Height: 1}, Action: regionActionMenuItem, Index: index, Name: item.Action})
+		if index >= len(itemYOffsets) {
+			continue
+		}
+		m.regions.Add(region{ID: fmt.Sprintf("menu:%d", index), Rect: Rect{X: menuX + contentX, Y: m.renderBodyY + menuY + itemYOffsets[index], Width: boxWidth, Height: 1}, Action: regionActionMenuItem, Index: index, Name: item.Action})
 	}
 	return overlayLines(body, rendered, menuX, menuY, m.width, bodyHeight)
 }

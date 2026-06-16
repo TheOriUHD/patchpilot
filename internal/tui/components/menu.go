@@ -3,6 +3,7 @@ package components
 import (
 	"strings"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/TheOriUHD/patchpilot/internal/tui/theme"
 )
 
@@ -21,12 +22,22 @@ type ContextMenu struct {
 
 // RenderContextMenu renders a menu for future mouse/right-click workflows.
 func RenderContextMenu(styles theme.Styles, menu ContextMenu) string {
+	rendered, _, _, _ := RenderContextMenuWithOffsets(styles, menu)
+	return rendered
+}
+
+// RenderContextMenuWithOffsets renders a menu and returns item geometry relative to the box top-left.
+func RenderContextMenuWithOffsets(styles theme.Styles, menu ContextMenu) (rendered string, itemYOffsets []int, contentX int, boxWidth int) {
 	var builder strings.Builder
+	contentY := 0
 	if menu.Title != "" {
 		builder.WriteString(styles.CardTitle.Render(menu.Title))
 		builder.WriteByte('\n')
+		contentY++
 	}
+	itemYOffsets = make([]int, 0, len(menu.Items))
 	for index, item := range menu.Items {
+		itemYOffsets = append(itemYOffsets, contentY+index)
 		prefix := "  "
 		if index == menu.Selected {
 			prefix = theme.SymbolPointer + " "
@@ -43,5 +54,12 @@ func RenderContextMenu(styles theme.Styles, menu ContextMenu) string {
 			builder.WriteByte('\n')
 		}
 	}
-	return styles.Card.Render(builder.String())
+	rendered = styles.Card.Render(builder.String())
+	contentX = styles.Card.GetBorderLeftSize() + styles.Card.GetPaddingLeft()
+	contentTop := styles.Card.GetBorderTopSize() + styles.Card.GetPaddingTop()
+	for index := range itemYOffsets {
+		itemYOffsets[index] += contentTop
+	}
+	boxWidth = lipgloss.Width(rendered)
+	return rendered, itemYOffsets, contentX, boxWidth
 }

@@ -2,11 +2,13 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/TheOriUHD/patchpilot/internal/core"
 	"github.com/TheOriUHD/patchpilot/internal/tui/components"
 	"github.com/TheOriUHD/patchpilot/internal/tui/theme"
@@ -275,6 +277,50 @@ func TestContextMenuItemDispatchesAction(t *testing.T) {
 	}
 }
 
+func TestContextMenuItemRegionsMatchPaintedItems(t *testing.T) {
+	t.Parallel()
+
+	items := []contextMenuItem{
+		{Label: "Update now", Action: "test:update"},
+		{Label: "Dry run", Action: "test:dry-run"},
+		{Label: "Edit settings", Action: "test:settings"},
+		{Label: "Remove", Action: "test:remove"},
+	}
+	tests := []struct {
+		name        string
+		title       string
+		x           int
+		y           int
+		wantShiftUp bool
+	}{
+		{name: "title present", title: "Host alpha", x: 12, y: 8},
+		{name: "title absent", title: "", x: 12, y: 8},
+		{name: "bottom clamped", title: "Host alpha", x: 118, y: 38, wantShiftUp: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			for index := range items {
+				m := mouseTestModel()
+				m.contextMenu = contextMenuState{Open: true, Kind: test.title, X: test.x, Y: test.y, Items: items}
+				_ = m.View()
+
+				x, y, shiftedUp := paintedContextMenuItemCenter(t, m, index)
+				if test.wantShiftUp && !shiftedUp {
+					t.Fatal("context menu was not shifted up from bottom edge")
+				}
+				updated, _ := m.handleMouse(mousePress(x, y, tea.MouseButtonLeft))
+				m = updated.(model)
+				if want := fmt.Sprintf("menu:%d", index); m.lastMouseRegionID != want {
+					t.Fatalf("click item %d at %d,%d hit %q, want %q", index, x, y, m.lastMouseRegionID, want)
+				}
+			}
+		})
+	}
+}
+
 func TestHostActionButtonsAndKeyboardAccelerators(t *testing.T) {
 	t.Parallel()
 
@@ -449,4 +495,47 @@ func regionCenter(t *testing.T, model model, action regionAction, index int, nam
 	}
 	t.Fatalf("region action=%s index=%d name=%q not found in %#v", action, index, name, model.regions.regions)
 	return 0, 0
+}
+
+func paintedContextMenuItemCenter(t *testing.T, model model, index int) (int, int, bool) {
+	t.Helper()
+
+	menu := components.ContextMenu{Title: model.contextMenu.Kind, Selected: -1}
+	for _, item := range model.contextMenu.Items {
+		menu.Items = append(menu.Items, components.MenuItem{Label: item.Label, Disabled: item.Disabled})
+	}
+	rendered, itemYOffsets, contentX, boxWidth := components.RenderContextMenuWithOffsets(model.styles, menu)
+	if index < 0 || index >= len(itemYOffsets) {
+		t.Fatalf("item offset %d missing from %d offsets", index, len(itemYOffsets))
+	}
+	bodyY := contextMenuBodyYForTest(model)
+	bodyHeight := contextMenuBodyHeightForTest(model, bodyY)
+	boxHeight := lipgloss.Height(rendered)
+	preferredY := model.contextMenu.Y - bodyY
+	menuY := max(0, min(max(0, bodyHeight-boxHeight), preferredY))
+	menuX := max(0, min(max(0, model.width-boxWidth), model.contextMenu.X))
+	if menuY+boxHeight > bodyHeight {
+		t.Fatalf("menu bottom = %d, body height = %d", menuY+boxHeight, bodyHeight)
+	}
+	labelWidth := lipgloss.Width("  " + model.contextMenu.Items[index].Label)
+	return menuX + contentX + max(0, labelWidth/2), bodyY + menuY + itemYOffsets[index], menuY < preferredY
+}
+
+func contextMenuBodyYForTest(model model) int {
+	tabbar := strings.TrimSuffix(model.renderTabBar(), "\n")
+	return lipgloss.Height(tabbar)
+}
+
+func contextMenuBodyHeightForTest(model model, bodyY int) int {
+	status := components.RenderStatusBar(model.styles, components.StatusBarState{
+		Keybinds: model.keybinds(),
+		Daemon:   model.daemonState,
+		Message:  model.status,
+		Width:    model.width,
+	})
+	bodyHeight := model.height - bodyY - lipgloss.Height(status)
+	if bodyHeight < 1 {
+		return 1
+	}
+	return bodyHeight
 }
