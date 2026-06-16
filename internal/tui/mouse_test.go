@@ -305,12 +305,35 @@ func TestContextMenuItemRegionsMatchPaintedItems(t *testing.T) {
 			for index := range items {
 				m := mouseTestModel()
 				m.contextMenu = contextMenuState{Open: true, Kind: test.title, X: test.x, Y: test.y, Items: items}
-				_ = m.View()
+				view := stripANSISequences(m.View())
+				lines := strings.Split(view, "\n")
 
-				x, y, shiftedUp := paintedContextMenuItemCenter(t, m, index)
-				if test.wantShiftUp && !shiftedUp {
-					t.Fatal("context menu was not shifted up from bottom edge")
+				if test.title != "" {
+					title := findPaintedText(t, lines, test.title)
+					assertTextInsideMenuBorder(t, title)
 				}
+
+				painted := findPaintedText(t, lines, items[index].Label)
+				assertTextInsideMenuBorder(t, painted)
+				region := menuRegion(t, m, index)
+				labelWidth := lipgloss.Width(items[index].Label)
+				if region.Rect.Y != painted.Row {
+					t.Fatalf("item %d painted row = %d, region row = %d", index, painted.Row, region.Rect.Y)
+				}
+				if !region.Rect.Contains(painted.Column, painted.Row) || !region.Rect.Contains(painted.Column+labelWidth-1, painted.Row) {
+					t.Fatalf("item %d painted at x=%d width=%d outside region %#v", index, painted.Column, labelWidth, region.Rect)
+				}
+
+				if test.wantShiftUp {
+					if region.Rect.Y >= test.y {
+						t.Fatalf("context menu was not shifted up from bottom edge: item row %d anchor y %d", region.Rect.Y, test.y)
+					}
+					if region.Rect.Y >= m.height-1 {
+						t.Fatalf("context menu item row %d overlaps status area for height %d", region.Rect.Y, m.height)
+					}
+				}
+				x := painted.Column + max(0, labelWidth/2)
+				y := painted.Row
 				updated, _ := m.handleMouse(mousePress(x, y, tea.MouseButtonLeft))
 				m = updated.(model)
 				if want := fmt.Sprintf("menu:%d", index); m.lastMouseRegionID != want {
@@ -497,45 +520,46 @@ func regionCenter(t *testing.T, model model, action regionAction, index int, nam
 	return 0, 0
 }
 
-func paintedContextMenuItemCenter(t *testing.T, model model, index int) (int, int, bool) {
+type paintedText struct {
+	Row     int
+	Column  int
+	Line    string
+	Content string
+}
+
+func findPaintedText(t *testing.T, lines []string, text string) paintedText {
 	t.Helper()
-
-	menu := components.ContextMenu{Title: model.contextMenu.Kind, Selected: -1}
-	for _, item := range model.contextMenu.Items {
-		menu.Items = append(menu.Items, components.MenuItem{Label: item.Label, Disabled: item.Disabled})
+	for row, line := range lines {
+		byteIndex := strings.Index(line, text)
+		if byteIndex < 0 {
+			continue
+		}
+		return paintedText{Row: row, Column: lipgloss.Width(line[:byteIndex]), Line: line, Content: text}
 	}
-	rendered, itemYOffsets, contentX, boxWidth := components.RenderContextMenuWithOffsets(model.styles, menu)
-	if index < 0 || index >= len(itemYOffsets) {
-		t.Fatalf("item offset %d missing from %d offsets", index, len(itemYOffsets))
-	}
-	bodyY := contextMenuBodyYForTest(model)
-	bodyHeight := contextMenuBodyHeightForTest(model, bodyY)
-	boxHeight := lipgloss.Height(rendered)
-	preferredY := model.contextMenu.Y - bodyY
-	menuY := max(0, min(max(0, bodyHeight-boxHeight), preferredY))
-	menuX := max(0, min(max(0, model.width-boxWidth), model.contextMenu.X))
-	if menuY+boxHeight > bodyHeight {
-		t.Fatalf("menu bottom = %d, body height = %d", menuY+boxHeight, bodyHeight)
-	}
-	labelWidth := lipgloss.Width("  " + model.contextMenu.Items[index].Label)
-	return menuX + contentX + max(0, labelWidth/2), bodyY + menuY + itemYOffsets[index], menuY < preferredY
+	t.Fatalf("painted text %q not found in view:\n%s", text, strings.Join(lines, "\n"))
+	return paintedText{}
 }
 
-func contextMenuBodyYForTest(model model) int {
-	tabbar := strings.TrimSuffix(model.renderTabBar(), "\n")
-	return lipgloss.Height(tabbar)
+func assertTextInsideMenuBorder(t *testing.T, text paintedText) {
+	t.Helper()
+	byteIndex := strings.Index(text.Line, text.Content)
+	if byteIndex < 0 {
+		t.Fatalf("text %q missing from line %q", text.Content, text.Line)
+	}
+	before := text.Line[:byteIndex]
+	after := text.Line[byteIndex+len(text.Content):]
+	if !strings.Contains(before, "│") || !strings.Contains(after, "│") {
+		t.Fatalf("text %q is not enclosed by menu borders on line %q", text.Content, text.Line)
+	}
 }
 
-func contextMenuBodyHeightForTest(model model, bodyY int) int {
-	status := components.RenderStatusBar(model.styles, components.StatusBarState{
-		Keybinds: model.keybinds(),
-		Daemon:   model.daemonState,
-		Message:  model.status,
-		Width:    model.width,
-	})
-	bodyHeight := model.height - bodyY - lipgloss.Height(status)
-	if bodyHeight < 1 {
-		return 1
+func menuRegion(t *testing.T, model model, index int) region {
+	t.Helper()
+	for _, region := range model.regions.regions {
+		if region.Action == regionActionMenuItem && region.Index == index {
+			return region
+		}
 	}
-	return bodyHeight
+	t.Fatalf("menu region %d not found in %#v", index, model.regions.regions)
+	return region{}
 }

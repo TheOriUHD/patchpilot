@@ -20,14 +20,29 @@ type ContextMenu struct {
 	Selected int
 }
 
-// RenderContextMenu renders a menu for future mouse/right-click workflows.
-func RenderContextMenu(styles theme.Styles, menu ContextMenu) string {
-	rendered, _, _, _ := RenderContextMenuWithOffsets(styles, menu)
-	return rendered
+// ContextMenuItemRect describes one item hit row relative to a rendered menu block.
+type ContextMenuItemRect struct {
+	X      int
+	Y      int
+	Width  int
+	Height int
 }
 
-// RenderContextMenuWithOffsets renders a menu and returns item geometry relative to the box top-left.
-func RenderContextMenuWithOffsets(styles theme.Styles, menu ContextMenu) (rendered string, itemYOffsets []int, contentX int, boxWidth int) {
+// ContextMenuLayout contains a rendered menu block and item geometry inside it.
+type ContextMenuLayout struct {
+	Rendered  string
+	ItemRects []ContextMenuItemRect
+	BoxWidth  int
+	BoxHeight int
+}
+
+// RenderContextMenu renders a menu for future mouse/right-click workflows.
+func RenderContextMenu(styles theme.Styles, menu ContextMenu) string {
+	return RenderContextMenuLayout(styles, menu).Rendered
+}
+
+// RenderContextMenuLayout renders a menu and returns item geometry relative to the box top-left.
+func RenderContextMenuLayout(styles theme.Styles, menu ContextMenu) ContextMenuLayout {
 	var builder strings.Builder
 	contentY := 0
 	if menu.Title != "" {
@@ -35,9 +50,9 @@ func RenderContextMenuWithOffsets(styles theme.Styles, menu ContextMenu) (render
 		builder.WriteByte('\n')
 		contentY++
 	}
-	itemYOffsets = make([]int, 0, len(menu.Items))
+	itemRows := make([]int, 0, len(menu.Items))
 	for index, item := range menu.Items {
-		itemYOffsets = append(itemYOffsets, contentY+index)
+		itemRows = append(itemRows, contentY+index)
 		prefix := "  "
 		if index == menu.Selected {
 			prefix = theme.SymbolPointer + " "
@@ -54,12 +69,18 @@ func RenderContextMenuWithOffsets(styles theme.Styles, menu ContextMenu) (render
 			builder.WriteByte('\n')
 		}
 	}
-	rendered = styles.Card.Render(builder.String())
-	contentX = styles.Card.GetBorderLeftSize() + styles.Card.GetPaddingLeft()
+	rendered := styles.Card.Render(builder.String())
+	boxWidth := lipgloss.Width(rendered)
+	boxHeight := lipgloss.Height(rendered)
+	contentX := styles.Card.GetBorderLeftSize() + styles.Card.GetPaddingLeft()
 	contentTop := styles.Card.GetBorderTopSize() + styles.Card.GetPaddingTop()
-	for index := range itemYOffsets {
-		itemYOffsets[index] += contentTop
+	contentWidth := boxWidth - contentX - styles.Card.GetBorderRightSize()
+	if contentWidth < 1 {
+		contentWidth = boxWidth
 	}
-	boxWidth = lipgloss.Width(rendered)
-	return rendered, itemYOffsets, contentX, boxWidth
+	itemRects := make([]ContextMenuItemRect, 0, len(itemRows))
+	for _, row := range itemRows {
+		itemRects = append(itemRects, ContextMenuItemRect{X: contentX, Y: contentTop + row, Width: contentWidth, Height: 1})
+	}
+	return ContextMenuLayout{Rendered: rendered, ItemRects: itemRects, BoxWidth: boxWidth, BoxHeight: boxHeight}
 }

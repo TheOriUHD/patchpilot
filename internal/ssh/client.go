@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/TheOriUHD/patchpilot/internal/diagnostics"
 	xssh "golang.org/x/crypto/ssh"
 )
 
@@ -160,7 +161,10 @@ func (c *Client) RunStream(ctx context.Context, command string, stdin []byte, on
 
 // Close closes the SSH connection.
 func (c *Client) Close() error {
-	return c.client.Close()
+	diagnostics.BootstrapDebugf("ssh.Client.Close: before close")
+	err := c.client.Close()
+	diagnostics.BootstrapDebugf("ssh.Client.Close: after close err=%v", err)
+	return err
 }
 
 func connect(ctx context.Context, host string, port int, config *xssh.ClientConfig) (*Client, error) {

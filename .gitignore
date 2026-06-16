@@ -33,3 +33,5 @@ Thumbs.db
 # Local data directories
 /var/log/patchpilot/
 .patchpilot/
+bootstrap-debug.log
+internal/core/bootstrap-debug.log

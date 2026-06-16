@@ -271,17 +271,21 @@ func (m model) renderContextMenuOverlay(body string, bodyHeight int) string {
 	for _, item := range m.contextMenu.Items {
 		menu.Items = append(menu.Items, components.MenuItem{Label: item.Label, Disabled: item.Disabled})
 	}
-	rendered, itemYOffsets, contentX, boxWidth := components.RenderContextMenuWithOffsets(m.styles, menu)
-	boxHeight := lipgloss.Height(rendered)
-	menuY := max(0, min(max(0, bodyHeight-boxHeight), m.contextMenu.Y-m.renderBodyY))
-	menuX := max(0, min(max(0, m.width-boxWidth), m.contextMenu.X))
+	layout := components.RenderContextMenuLayout(m.styles, menu)
+	menuY := max(0, min(max(0, bodyHeight-layout.BoxHeight), m.contextMenu.Y-m.renderBodyY))
+	menuX := max(0, min(max(0, m.width-layout.BoxWidth), m.contextMenu.X))
 	for index, item := range m.contextMenu.Items {
-		if index >= len(itemYOffsets) {
+		if index >= len(layout.ItemRects) {
 			continue
 		}
-		m.regions.Add(region{ID: fmt.Sprintf("menu:%d", index), Rect: Rect{X: menuX + contentX, Y: m.renderBodyY + menuY + itemYOffsets[index], Width: boxWidth, Height: 1}, Action: regionActionMenuItem, Index: index, Name: item.Action})
+		rect := layout.ItemRects[index]
+		screenY := m.renderBodyY + menuY + rect.Y
+		if screenY < m.renderBodyY || screenY >= m.renderBodyY+bodyHeight {
+			continue
+		}
+		m.regions.Add(region{ID: fmt.Sprintf("menu:%d", index), Rect: Rect{X: menuX + rect.X, Y: screenY, Width: rect.Width, Height: rect.Height}, Action: regionActionMenuItem, Index: index, Name: item.Action})
 	}
-	return overlayLines(body, rendered, menuX, menuY, m.width, bodyHeight)
+	return overlayLines(body, layout.Rendered, menuX, menuY, m.width, bodyHeight)
 }
 
 func overlayLines(base string, overlay string, x int, y int, width int, height int) string {
@@ -295,7 +299,7 @@ func overlayLines(base string, overlay string, x int, y int, width int, height i
 		if target < 0 || target >= height {
 			continue
 		}
-		baseLine := padRight(lines[target], width)
+		baseLine := padRight(stripANSISequences(lines[target]), width)
 		prefix := baseLine[:min(x, len(baseLine))]
 		lineWidth := lipgloss.Width(line)
 		suffixStart := min(width, x+lineWidth)
