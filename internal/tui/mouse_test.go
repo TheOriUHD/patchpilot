@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -265,8 +264,8 @@ func TestContextMenuItemDispatchesAction(t *testing.T) {
 	menuX, menuY := regionCenter(t, m, regionActionMenuItem, 0, "")
 	updated, cmd := m.handleMouse(mousePress(menuX, menuY, tea.MouseButtonLeft))
 	m = updated.(model)
-	if cmd != nil {
-		t.Fatal("Update now menu action should open confirmation, not run immediately")
+	if cmd == nil {
+		t.Fatal("Update now menu action should return clear-screen command")
 	}
 	if m.contextMenu.Open {
 		t.Fatal("context menu stayed open after item selection")
@@ -304,24 +303,43 @@ func TestHostActionButtonsAndKeyboardAccelerators(t *testing.T) {
 	}
 }
 
-func TestRowHoverAndSelectionBothRender(t *testing.T) {
+func TestHoverThenArrowShowsOneActiveRow(t *testing.T) {
 	t.Parallel()
 
 	m := mouseTestModel()
-	m.hosts = []core.Host{{ID: 1, Name: "alpha", Type: core.HostTypeStandard, Enabled: true}, {ID: 2, Name: "bravo", Type: core.HostTypeStandard, Enabled: true}}
-	m.hostSelected = 0
+	m.hosts = []core.Host{{ID: 1, Name: "alpha", Type: core.HostTypeStandard, Enabled: true}, {ID: 2, Name: "bravo", Type: core.HostTypeStandard, Enabled: true}, {ID: 3, Name: "charlie", Type: core.HostTypeStandard, Enabled: true}}
 	_ = m.View()
 	x, y := regionCenter(t, m, regionActionHostRow, 1, "")
 	updated, _ := m.handleMouse(tea.MouseMsg{X: x, Y: y, Action: tea.MouseActionMotion, Button: tea.MouseButtonNone})
 	m = updated.(model)
-	view := m.View()
-	selectedLine := expectedHostLine(m, m.hosts[0], 0, true)
-	hoverLine := expectedHostLine(m, m.hosts[1], 1, false)
-	if !strings.Contains(view, m.styles.ActiveTab.Render(selectedLine)) {
-		t.Fatalf("selected row not visibly selected in render")
+	updated, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(model)
+	if m.hostSelected != 2 || m.hoveredHost != -1 {
+		t.Fatalf("hostSelected=%d hoveredHost=%d, want selected row 3 and no hover", m.hostSelected, m.hoveredHost)
 	}
-	if !strings.Contains(view, m.styles.HoverRow.Render(hoverLine)) {
-		t.Fatalf("hovered row not visibly hovered in render")
+	view := m.View()
+	if count := strings.Count(view, theme.SymbolPointer); count != 1 {
+		t.Fatalf("active row count = %d, want 1", count)
+	}
+}
+
+func TestArrowThenHoverShowsOneActiveRow(t *testing.T) {
+	t.Parallel()
+
+	m := mouseTestModel()
+	m.hosts = []core.Host{{ID: 1, Name: "alpha", Type: core.HostTypeStandard, Enabled: true}, {ID: 2, Name: "bravo", Type: core.HostTypeStandard, Enabled: true}, {ID: 3, Name: "charlie", Type: core.HostTypeStandard, Enabled: true}, {ID: 4, Name: "delta", Type: core.HostTypeStandard, Enabled: true}}
+	updated, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(model)
+	_ = m.View()
+	x, y := regionCenter(t, m, regionActionHostRow, 3, "")
+	updated, _ = m.handleMouse(tea.MouseMsg{X: x, Y: y, Action: tea.MouseActionMotion, Button: tea.MouseButtonNone})
+	m = updated.(model)
+	if m.hostSelected != 3 || m.hoveredHost != 3 {
+		t.Fatalf("hostSelected=%d hoveredHost=%d, want row 4 active via hover", m.hostSelected, m.hoveredHost)
+	}
+	view := m.View()
+	if count := strings.Count(view, theme.SymbolPointer); count != 1 {
+		t.Fatalf("active row count = %d, want 1", count)
 	}
 }
 
@@ -431,16 +449,4 @@ func regionCenter(t *testing.T, model model, action regionAction, index int, nam
 	}
 	t.Fatalf("region action=%s index=%d name=%q not found in %#v", action, index, name, model.regions.regions)
 	return 0, 0
-}
-
-func expectedHostLine(m model, host core.Host, index int, selected bool) string {
-	cursor := " "
-	if selected {
-		cursor = theme.SymbolPointer
-	}
-	status := theme.SymbolOK
-	if !host.Enabled {
-		status = theme.SymbolDisabled
-	}
-	return fmt.Sprintf("%-2s %-22s %-12s %-12s %-12s %-8s %s", cursor+status, truncate(host.Name, 22), host.Type, host.PackageManager, "-", "-", m.hostRebootHint(host.ID))
 }

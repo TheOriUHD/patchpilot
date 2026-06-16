@@ -88,9 +88,9 @@ func (m model) handleWizardKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.hostScreen = hostScreenList
 		m.status = "Add host cancelled; secrets wiped"
 		if sessionID != "" {
-			return m, tea.Batch(cancelBootstrapCmd(m.ctx, m.client, sessionID), loadHostsCmd(m.ctx, m.client))
+			return m, withClearScreen(cancelBootstrapCmd(m.ctx, m.client, sessionID), loadHostsCmd(m.ctx, m.client))
 		}
-		return m, loadHostsCmd(m.ctx, m.client)
+		return m, withClearScreen(loadHostsCmd(m.ctx, m.client))
 	}
 
 	switch m.wizard.step {
@@ -352,7 +352,7 @@ func (m model) handleWizardMsg(msg wizardMsg) (model, tea.Cmd) {
 		m.hostScreen = hostScreenList
 		m.status = "Host saved: " + msg.host.Name
 		m.hostLoading = true
-		return m, loadHostsCmd(m.ctx, m.client)
+		return m, withClearScreen(loadHostsCmd(m.ctx, m.client))
 	}
 	return m, nil
 }

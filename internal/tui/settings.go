@@ -31,14 +31,15 @@ func (m model) handleSettingsKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			confirm := m.settingsConfirm
 			m.settingsConfirm = ""
 			if confirm == "enable-concurrency" {
-				return m, setConcurrencyCmd(m.ctx, m.client, true)
+				return m, withClearScreen(setConcurrencyCmd(m.ctx, m.client, true))
 			}
 			if confirm == "rotate-key" {
-				return m, rotateKeypairCmd(m.ctx, m.client)
+				return m, withClearScreen(rotateKeypairCmd(m.ctx, m.client))
 			}
 		case "n", "esc":
 			m.settingsConfirm = ""
 			m.status = "Cancelled"
+			return m, clearScreenOnTransition()
 		}
 		return m, nil
 	}
@@ -110,12 +111,12 @@ func (m model) handleSettingsKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if !m.settingsSnapshot.ConcurrencyEnabled {
 			m.settingsConfirm = "enable-concurrency"
-			return m, nil
+			return m, clearScreenOnTransition()
 		}
 		return m, setConcurrencyCmd(m.ctx, m.client, false)
 	case "k":
 		m.settingsConfirm = "rotate-key"
-		return m, nil
+		return m, clearScreenOnTransition()
 	case "e":
 		m.settingsPathFocus = "export"
 		if m.settingsExportPath == "" {
@@ -192,11 +193,11 @@ func (m model) renderSettingsView(bodyHeight int) string {
 	builder.WriteString("\n\n")
 	builder.WriteString(m.styles.CardTitle.Render("About"))
 	fmt.Fprintf(&builder, "\nVersion: %s\nCommit: %s\nBuild date: %s\nGo: %s\nPlatform: %s", snapshot.About.Version, snapshot.About.Commit, snapshot.About.BuildDate, snapshot.About.GoVersion, snapshot.About.OSArch)
+	content := lipgloss.NewStyle().Width(m.width).Height(bodyHeight).Padding(1, 2).Render(builder.String())
 	if m.settingsConfirm != "" {
-		builder.WriteString("\n\n")
-		builder.WriteString(m.styles.ErrorText.Render(m.settingsConfirmText()))
+		content = m.renderCenteredOverlay(content, m.styles.Card.Width(72).Render(m.styles.ErrorText.Render(m.settingsConfirmText())), bodyHeight)
 	}
-	return lipgloss.NewStyle().Width(m.width).Height(bodyHeight).Padding(1, 2).Render(builder.String())
+	return content
 }
 
 func (m model) settingsConfirmText() string {

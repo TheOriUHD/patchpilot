@@ -56,14 +56,15 @@ func (m model) handleSchedulesKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			action := m.schedulePending
 			m.schedulePending = schedulePendingAction{}
 			if action.Kind == "delete" {
-				return m, deleteScheduleCmd(m.ctx, m.client, action.ID)
+				return m, withClearScreen(deleteScheduleCmd(m.ctx, m.client, action.ID))
 			}
 			if action.Kind == "run" {
-				return m, runScheduleCmd(m.ctx, m.client, action.ID)
+				return m, withClearScreen(runScheduleCmd(m.ctx, m.client, action.ID))
 			}
 		case "n", "esc":
 			m.schedulePending = schedulePendingAction{}
 			m.status = "Cancelled"
+			return m, clearScreenOnTransition()
 		}
 		return m, nil
 	}
@@ -89,35 +90,40 @@ func (m model) handleSchedulesKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.scheduleScreen = scheduleScreenEditor
 		m.scheduleEditor = scheduleEditor{input: m.defaultScheduleInput()}
 		m.status = "New schedule"
-		return m, nil
+		return m, clearScreenOnTransition()
 	case "e", "enter":
 		if schedule, ok := m.selectedSchedule(); ok {
 			m.scheduleScreen = scheduleScreenEditor
 			m.scheduleEditor = scheduleEditor{id: schedule.ID, input: scheduler.InputFromSchedule(schedule)}
 			m.status = "Edit schedule"
+			return m, clearScreenOnTransition()
 		}
 		return m, nil
 	case "x":
 		if schedule, ok := m.selectedSchedule(); ok {
 			m.schedulePending = schedulePendingAction{Kind: "delete", ID: schedule.ID, Name: schedule.Name}
+			return m, clearScreenOnTransition()
 		}
 		return m, nil
 	case "R":
 		if schedule, ok := m.selectedSchedule(); ok {
 			m.schedulePending = schedulePendingAction{Kind: "run", ID: schedule.ID, Name: schedule.Name}
+			return m, clearScreenOnTransition()
 		}
 		return m, nil
 	case "m":
 		if _, ok := m.selectedSchedule(); ok {
-			return m.openScheduleContextMenu(m.scheduleSelected, 4, m.renderBodyY+5+m.scheduleSelected), nil
+			return m.openScheduleContextMenu(m.scheduleSelected, 4, m.renderBodyY+5+m.scheduleSelected), clearScreenOnTransition()
 		}
 		return m, nil
 	case "down", "j":
+		m = m.clearHover()
 		if m.scheduleSelected < len(m.schedules)-1 {
 			m.scheduleSelected++
 		}
 		return m, nil
 	case "up", "k":
+		m = m.clearHover()
 		if m.scheduleSelected > 0 {
 			m.scheduleSelected--
 		}
@@ -290,7 +296,7 @@ func (m model) renderSchedulesView(bodyHeight int) string {
 	}
 	content := lipgloss.NewStyle().Width(m.width).Height(bodyHeight).Padding(1, 2).Render(builder.String())
 	if m.schedulePending.Kind != "" {
-		content = lipgloss.JoinVertical(lipgloss.Center, content, m.renderScheduleConfirm())
+		content = m.renderCenteredOverlay(content, m.renderScheduleConfirm(), bodyHeight)
 	}
 	return content
 }

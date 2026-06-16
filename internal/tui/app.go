@@ -243,11 +243,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pending = pendingAction{}
 		if typed.err != nil {
 			m.status = typed.err.Error()
-			return m, nil
+			return m, clearScreenOnTransition()
 		}
 		m.status = typed.message
 		m.hostLoading = true
-		return m, loadHostsCmd(m.ctx, m.client)
+		return m, withClearScreen(loadHostsCmd(m.ctx, m.client))
 	case schedulesLoadedMsg:
 		m.scheduleLoading = false
 		if typed.err != nil {
@@ -264,12 +264,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case scheduleMutationMsg:
 		if typed.err != nil {
 			m.status = typed.err.Error()
-			return m, nil
+			return m, clearScreenOnTransition()
 		}
 		m.status = typed.message
 		m.scheduleScreen = scheduleScreenList
 		m.scheduleLoading = true
-		return m, loadSchedulesCmd(m.ctx, m.client)
+		return m, withClearScreen(loadSchedulesCmd(m.ctx, m.client))
 	case runsLoadedMsg:
 		m.runLoading = false
 		if typed.err != nil {
@@ -351,7 +351,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.settingsLoading = false
 		if typed.err != nil {
 			m.status = typed.err.Error()
-			return m, nil
+			return m, clearScreenOnTransition()
 		}
 		if typed.snapshot != nil {
 			m.settingsSnapshot = typed.snapshot
@@ -363,7 +363,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.settingsImportConflicts = nil
 		m.status = typed.message
-		return m, loadSettingsCmd(m.ctx, m.client)
+		return m, withClearScreen(loadSettingsCmd(m.ctx, m.client))
 	case wizardMsg:
 		var cmd tea.Cmd
 		m, cmd = m.handleWizardMsg(typed)
@@ -421,7 +421,7 @@ func (m model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.contextMenu.Open {
 		if key.String() == "esc" {
 			m.contextMenu = contextMenuState{}
-			return m, nil
+			return m, clearScreenOnTransition()
 		}
 	}
 	if m.logViewer != nil {
@@ -435,7 +435,7 @@ func (m model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.liveModalVisible = true
 			m.liveMinimized = false
 			m.runBanner = ""
-			return m, nil
+			return m, clearScreenOnTransition()
 		}
 		if m.liveAvailableRunID != 0 {
 			return m, loadRunDetailCmd(m.ctx, m.client, m.liveAvailableRunID)
@@ -560,6 +560,20 @@ func (m *model) clearConfirmations() {
 	m.schedulePending = schedulePendingAction{}
 	m.settingsConfirm = ""
 	m.liveCancel = false
+}
+
+func clearScreenOnTransition() tea.Cmd {
+	return tea.ClearScreen
+}
+
+func withClearScreen(cmds ...tea.Cmd) tea.Cmd {
+	all := []tea.Cmd{tea.ClearScreen}
+	for _, cmd := range cmds {
+		if cmd != nil {
+			all = append(all, cmd)
+		}
+	}
+	return tea.Batch(all...)
 }
 
 func loadHostsCmd(ctx context.Context, client *ipc.Client) tea.Cmd {

@@ -115,6 +115,7 @@ func (m model) renderTabBar() string {
 }
 
 func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	// Context-menu visibility transitions return clearScreenOnTransition (tea.ClearScreen).
 	event := tea.MouseEvent(msg)
 	m.lastMouseRegionID = ""
 	m.lastMouseDoubleClick = false
@@ -131,10 +132,13 @@ func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.contextMenu.Open && (!ok || hit.Action != regionActionMenuItem) {
 		m.contextMenu = contextMenuState{}
+		if ok {
+			return m, clearScreenOnTransition()
+		}
 		if !ok {
 			m.lastClick.Valid = false
 			m = m.clearHover()
-			return m, nil
+			return m, clearScreenOnTransition()
 		}
 	}
 	if !ok {
@@ -176,6 +180,7 @@ func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				if host, ok := m.selectedHost(); ok {
 					m.renameBuffer = host.Name
 				}
+				return m, clearScreenOnTransition()
 			}
 		case regionActionScheduleRow:
 			m.scheduleSelected = hit.Index
@@ -184,6 +189,7 @@ func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 					m.scheduleScreen = scheduleScreenEditor
 					m.scheduleEditor = scheduleEditor{id: schedule.ID, input: scheduler.InputFromSchedule(schedule)}
 					m.status = "Edit schedule"
+					return m, clearScreenOnTransition()
 				}
 			}
 		case regionActionRunRow:
@@ -211,10 +217,13 @@ func (m model) updateHover(hit region, ok bool) model {
 		m.hoveredTab = hit.Index
 	case regionActionHostRow:
 		m.hoveredHost = hit.Index
+		m.hostSelected = hit.Index
 	case regionActionScheduleRow:
 		m.hoveredSchedule = hit.Index
+		m.scheduleSelected = hit.Index
 	case regionActionRunRow:
 		m.hoveredRun = hit.Index
+		m.runSelected = hit.Index
 	}
 	return m
 }
@@ -231,11 +240,11 @@ func (m model) clearHover() model {
 func (m model) openContextMenuForRegion(hit region, x int, y int) (tea.Model, tea.Cmd) {
 	switch hit.Action {
 	case regionActionHostRow:
-		return m.openHostContextMenu(hit.Index, x, y), nil
+		return m.openHostContextMenu(hit.Index, x, y), clearScreenOnTransition()
 	case regionActionScheduleRow:
-		return m.openScheduleContextMenu(hit.Index, x, y), nil
+		return m.openScheduleContextMenu(hit.Index, x, y), clearScreenOnTransition()
 	case regionActionRunRow:
-		return m.openRunContextMenu(hit.Index, x, y), nil
+		return m.openRunContextMenu(hit.Index, x, y), clearScreenOnTransition()
 	default:
 		return m, nil
 	}
@@ -250,7 +259,8 @@ func (m model) activateContextMenuItem(index int) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.contextMenu = contextMenuState{}
-	return m.activateContextAction(item.Action)
+	updated, cmd := m.activateContextAction(item.Action)
+	return updated, withClearScreen(cmd)
 }
 
 func (m model) renderContextMenuOverlay(body string, bodyHeight int) string {
@@ -367,6 +377,7 @@ func (m model) activateContextAction(action string) (tea.Model, tea.Cmd) {
 		if host, ok := m.selectedHost(); ok {
 			m.hostScreen = hostScreenDetail
 			m.renameBuffer = host.Name
+			return m, nil
 		}
 	case "host:reboot-policy":
 		if host, ok := m.selectedHost(); ok {

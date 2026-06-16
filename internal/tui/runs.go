@@ -122,7 +122,7 @@ func (m model) handleRunsKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "m":
 		if m.runTreeDetail == nil {
 			if _, ok := m.selectedRun(); ok {
-				return m.openRunContextMenu(m.runSelected, 4, m.renderBodyY+5+m.runSelected), nil
+				return m.openRunContextMenu(m.runSelected, 4, m.renderBodyY+5+m.runSelected), clearScreenOnTransition()
 			}
 		}
 		return m, nil
@@ -135,6 +135,7 @@ func (m model) handleRunsKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "down", "j":
+		m = m.clearHover()
 		if m.runTreeDetail != nil {
 			if m.runTreeHostIndex < len(m.runTreeDetail.HostRuns)-1 {
 				m.runTreeHostIndex++
@@ -146,6 +147,7 @@ func (m model) handleRunsKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "up", "k":
+		m = m.clearHover()
 		if m.runTreeDetail != nil {
 			if m.runTreeHostIndex > 0 {
 				m.runTreeHostIndex--
@@ -161,7 +163,7 @@ func (m model) handleRunsKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.runTreeDetail = nil
 			m.runTreeLogs = nil
 			m.runTreeHostIndex = 0
-			return m, nil
+			return m, clearScreenOnTransition()
 		}
 		return m, nil
 	}
@@ -315,7 +317,7 @@ func (m *model) openLiveRun(detail core.RunDetail) tea.Cmd {
 	m.liveAvailableRunID = detail.Run.ID
 	m.runTreeDetail = nil
 	m.runTreeLogs = nil
-	return tea.ClearScreen
+	return clearScreenOnTransition()
 }
 
 func (m model) handleLiveRunKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -342,12 +344,12 @@ func (m model) handleLiveRunKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.liveCompleted {
 			m.liveModalVisible = false
 			m.liveMinimized = false
-			return m, tea.ClearScreen
+			return m, clearScreenOnTransition()
 		}
 		m.liveModalVisible = false
 		m.liveMinimized = true
 		m.runBanner = "⟳ Run in progress on " + m.liveRunHostLabel() + " — press L to view"
-		return m, tea.ClearScreen
+		return m, clearScreenOnTransition()
 	case "K":
 		if !m.liveCompleted {
 			m.liveCancel = true
@@ -382,7 +384,7 @@ func (m model) handleLiveRunKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.liveCompleted {
 			m.liveModalVisible = false
 			m.liveMinimized = false
-			return m, tea.ClearScreen
+			return m, clearScreenOnTransition()
 		}
 	}
 	return m, nil
@@ -395,6 +397,7 @@ func (m model) handleHistoryLogViewerKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch key.String() {
 	case "esc", "q":
 		m.logViewer = nil
+		return m, clearScreenOnTransition()
 	case "pgup":
 		m.logViewer.offset += 10
 	case "pgdown":
@@ -434,7 +437,7 @@ func (m model) openSelectedHistoryHostLog() (tea.Model, tea.Cmd) {
 		}
 	}
 	m.logViewer = &historyLogViewer{title: "Run log: " + hostRun.HostName, lines: lines}
-	return m, nil
+	return m, clearScreenOnTransition()
 }
 
 func (m *model) observeActiveRun() {

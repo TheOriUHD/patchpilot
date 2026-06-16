@@ -26,8 +26,8 @@ func TestConfirmPendingDismissesBeforeReturningCommand(t *testing.T) {
 	m.hosts = []core.Host{{ID: 42, Name: "debian", Type: core.HostTypeStandard, Enabled: true}}
 
 	updated, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'U'}})
-	if cmd != nil {
-		t.Fatal("opening confirmation should not return command")
+	if cmd == nil {
+		t.Fatal("opening confirmation should return clear-screen command")
 	}
 	confirming := updated.(model)
 	if !strings.Contains(confirming.View(), "Run updates now on debian? y/n") {
@@ -100,11 +100,83 @@ func TestHostDetailRepairSudoersAction(t *testing.T) {
 
 	updated, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'P'}})
 	result := updated.(model)
-	if cmd != nil {
-		t.Fatal("repair confirmation should not immediately return command")
+	if cmd == nil {
+		t.Fatal("repair confirmation should return clear-screen command")
 	}
 	if result.pending.Kind != "repair-sudoers" {
 		t.Fatalf("pending kind = %q, want repair-sudoers", result.pending.Kind)
+	}
+}
+
+func TestConfirmationModalOpenCloseFullScreenRender(t *testing.T) {
+	t.Parallel()
+
+	m := newModel(context.Background(), "/tmp/patchpilot.sock")
+	m.width = 120
+	m.height = 40
+	m.daemonState = components.DaemonUp
+	m.hosts = []core.Host{{ID: 1, Name: "debian", Type: core.HostTypeStandard, Enabled: true}}
+
+	updated, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'U'}})
+	m = updated.(model)
+	assertFullScreenRender(t, m.View(), m.width, m.height)
+	if !strings.Contains(m.View(), "Run updates now on debian? y/n") {
+		t.Fatalf("confirmation modal missing after open")
+	}
+
+	updated, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	m = updated.(model)
+	assertFullScreenRender(t, m.View(), m.width, m.height)
+	if strings.Contains(m.View(), "Run updates now on debian? y/n") {
+		t.Fatalf("confirmation modal still visible after close")
+	}
+}
+
+func TestContextMenuOpenCloseFullScreenRender(t *testing.T) {
+	t.Parallel()
+
+	m := newModel(context.Background(), "/tmp/patchpilot.sock")
+	m.width = 120
+	m.height = 40
+	m.daemonState = components.DaemonUp
+	m.hosts = []core.Host{{ID: 1, Name: "debian", Type: core.HostTypeStandard, Enabled: true}}
+	_ = m.View()
+	x, y := regionCenter(t, m, regionActionHostRow, 0, "")
+	updated, _ := m.handleMouse(mousePress(x, y, tea.MouseButtonRight))
+	m = updated.(model)
+	assertFullScreenRender(t, m.View(), m.width, m.height)
+	if !strings.Contains(m.View(), "Host debian") {
+		t.Fatalf("context menu missing after open")
+	}
+
+	updated, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(model)
+	assertFullScreenRender(t, m.View(), m.width, m.height)
+	if strings.Contains(m.View(), "Host debian") {
+		t.Fatalf("context menu still visible after close")
+	}
+}
+
+func TestWizardOpenCloseFullScreenRender(t *testing.T) {
+	t.Parallel()
+
+	m := newModel(context.Background(), "/tmp/patchpilot.sock")
+	m.width = 120
+	m.height = 40
+	m.daemonState = components.DaemonUp
+
+	updated, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m = updated.(model)
+	assertFullScreenRender(t, m.View(), m.width, m.height)
+	if !strings.Contains(m.View(), "Add new host") {
+		t.Fatalf("wizard missing after open")
+	}
+
+	updated, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(model)
+	assertFullScreenRender(t, m.View(), m.width, m.height)
+	if strings.Contains(m.View(), "Add new host") {
+		t.Fatalf("wizard still visible after close")
 	}
 }
 

@@ -44,6 +44,7 @@ type dryRunLoadedMsg struct {
 }
 
 func (m model) handleHostsKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Modal/detail/wizard visibility transitions return clearScreenOnTransition (tea.ClearScreen).
 	if m.hostScreen == hostScreenWizard {
 		return m.handleWizardKey(key)
 	}
@@ -54,7 +55,7 @@ func (m model) handleHostsKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "n", "esc":
 			m.pending = pendingAction{}
 			m.status = "Cancelled"
-			return m, nil
+			return m, clearScreenOnTransition()
 		}
 		return m, nil
 	}
@@ -93,13 +94,15 @@ func (m model) handleHostListKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.hostScreen = hostScreenWizard
 		m.wizard = newStandardWizard()
 		m.status = "Add host"
-		return m, nil
+		return m, clearScreenOnTransition()
 	case "down", "j":
+		m = m.clearHover()
 		if m.hostSelected < len(m.filteredHosts())-1 {
 			m.hostSelected++
 		}
 		return m, nil
 	case "up", "k":
+		m = m.clearHover()
 		if m.hostSelected > 0 {
 			m.hostSelected--
 		}
@@ -108,6 +111,7 @@ func (m model) handleHostListKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if host, ok := m.selectedHost(); ok {
 			m.hostScreen = hostScreenDetail
 			m.renameBuffer = host.Name
+			return m, clearScreenOnTransition()
 		}
 		return m, nil
 	case "e":
@@ -117,6 +121,7 @@ func (m model) handleHostListKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.pending = pendingAction{Kind: "toggle", Host: host}
+			return m, clearScreenOnTransition()
 		}
 		return m, nil
 	case "u", "U":
@@ -126,6 +131,7 @@ func (m model) handleHostListKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.pending = pendingAction{Kind: "run", Host: host}
+			return m, clearScreenOnTransition()
 		}
 		return m, nil
 	case "r", "R":
@@ -133,7 +139,7 @@ func (m model) handleHostListKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, loadHostsCmd(m.ctx, m.client)
 	case "m":
 		if _, ok := m.selectedHost(); ok {
-			return m.openHostContextMenu(m.hostSelected, 4, m.renderBodyY+5+m.hostSelected), nil
+			return m.openHostContextMenu(m.hostSelected, 4, m.renderBodyY+5+m.hostSelected), clearScreenOnTransition()
 		}
 		return m, nil
 	case "/":
@@ -148,7 +154,7 @@ func (m model) handleDetailKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "q", "esc":
 		m.hostScreen = hostScreenList
 		m.detailTab = 0
-		return m, nil
+		return m, clearScreenOnTransition()
 	case "tab":
 		m.detailTab = (m.detailTab + 1) % 3
 		return m, nil
@@ -162,6 +168,7 @@ func (m model) handleDetailKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.pending = pendingAction{Kind: "run", Host: host}
+			return m, clearScreenOnTransition()
 		}
 		return m, nil
 	case "d":
@@ -187,6 +194,7 @@ func (m model) handleDetailKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.pending = pendingAction{Kind: "toggle", Host: host}
+			return m, clearScreenOnTransition()
 		}
 		return m, nil
 	case "b":
@@ -212,6 +220,7 @@ func (m model) handleDetailKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.pending = pendingAction{Kind: "repair-sudoers", Host: host}
+			return m, clearScreenOnTransition()
 		}
 		return m, nil
 	case "x":
@@ -221,6 +230,7 @@ func (m model) handleDetailKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.pending = pendingAction{Kind: "remove", Host: host}
+			return m, clearScreenOnTransition()
 		}
 		return m, nil
 	}
@@ -280,14 +290,14 @@ func (m model) confirmPending() (tea.Model, tea.Cmd) {
 	m.pending = pendingAction{}
 	switch action.Kind {
 	case "toggle":
-		return m, toggleHostCmd(m.ctx, m.client, action.Host.ID)
+		return m, withClearScreen(toggleHostCmd(m.ctx, m.client, action.Host.ID))
 	case "remove":
 		m.hostScreen = hostScreenList
-		return m, deleteHostCmd(m.ctx, m.client, action.Host.ID)
+		return m, withClearScreen(deleteHostCmd(m.ctx, m.client, action.Host.ID))
 	case "run":
-		return m, runHostCmd(m.ctx, m.client, action.Host.ID)
+		return m, withClearScreen(runHostCmd(m.ctx, m.client, action.Host.ID))
 	case "repair-sudoers":
-		return m, repairSudoersCmd(m.ctx, m.client, action.Host.ID, action.Host.Name)
+		return m, withClearScreen(repairSudoersCmd(m.ctx, m.client, action.Host.ID, action.Host.Name))
 	}
 	return m, nil
 }
@@ -298,9 +308,13 @@ func (m model) renderHostsView(bodyHeight int) string {
 	}
 	content := m.renderHostContent(bodyHeight)
 	if m.pending.Kind != "" {
-		content = lipgloss.JoinVertical(lipgloss.Center, content, m.renderConfirm())
+		content = m.renderCenteredOverlay(content, m.renderConfirm(), bodyHeight)
 	}
 	return content
+}
+
+func (m model) renderCenteredOverlay(content string, modal string, bodyHeight int) string {
+	return overlayLines(content, modal, max(0, (m.width-lipgloss.Width(modal))/2), max(0, bodyHeight/2-lipgloss.Height(modal)/2), m.width, bodyHeight)
 }
 
 func (m model) renderHostContent(bodyHeight int) string {
