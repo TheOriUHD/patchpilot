@@ -18,7 +18,7 @@ func TestParseHostFacts(t *testing.T) {
 	}{
 		{
 			name:   "debian apt",
-			output: probeOutput("PRETTY_NAME=\"Debian GNU/Linux 12 (bookworm)\"\nID=debian", "Linux host 6.1", "x86_64", "serverph", "apt", "no", "no", "no", "present", "no", "1000", "missing"),
+			output: probeOutput("PRETTY_NAME=\"Debian GNU/Linux 12 (bookworm)\"\nID=debian", "Linux host 6.1", "x86_64", "serverph", "apt", "no", "no", "no", "present", "no", "present", "1000", "missing"),
 			want: HostFacts{
 				OSPretty:             "Debian GNU/Linux 12 (bookworm)",
 				OSID:                 "debian",
@@ -28,13 +28,19 @@ func TestParseHostFacts(t *testing.T) {
 				PackageManager:       pkgmgr.ManagerAPT,
 				PackageManagersFound: []pkgmgr.PackageManager{pkgmgr.ManagerAPT},
 				SudoPresent:          true,
+				SuPresent:            true,
 				CurrentUID:           "1000",
 			},
 		},
 		{
 			name:   "proxmox uses apt_proxmox",
-			output: probeOutput("PRETTY_NAME=\"Debian GNU/Linux 12\"", "Linux pve", "x86_64", "pve", "apt", "yes", "no", "no", "present", "yes", "0", "exists"),
-			want:   HostFacts{PackageManager: pkgmgr.ManagerAPTProxmox, IsProxmox: true, SudoPresent: true, SudoNoPassword: true, PatchpilotUserExists: true, CurrentUID: "0"},
+			output: probeOutput("PRETTY_NAME=\"Debian GNU/Linux 12\"", "Linux pve", "x86_64", "pve", "apt", "yes", "no", "no", "present", "yes", "present", "0", "exists"),
+			want:   HostFacts{PackageManager: pkgmgr.ManagerAPTProxmox, IsProxmox: true, SudoPresent: true, SudoNoPassword: true, SuPresent: true, PatchpilotUserExists: true, CurrentUID: "0"},
+		},
+		{
+			name:   "minimal debian without sudo has su",
+			output: probeOutput("PRETTY_NAME=\"Debian GNU/Linux 12\"", "Linux db", "x86_64", "mc-database", "apt", "no", "no", "no", "missing", "no", "present", "1000", "missing"),
+			want:   HostFacts{PackageManager: pkgmgr.ManagerAPT, SudoPresent: false, SuPresent: true, CurrentUID: "1000"},
 		},
 		{
 			name:    "missing section",
@@ -43,7 +49,7 @@ func TestParseHostFacts(t *testing.T) {
 		},
 		{
 			name:    "no package manager",
-			output:  probeOutput("PRETTY_NAME=\"Mystery\"", "Linux", "x86_64", "mystery", "", "no", "no", "no", "present", "no", "1000", "missing"),
+			output:  probeOutput("PRETTY_NAME=\"Mystery\"", "Linux", "x86_64", "mystery", "", "no", "no", "no", "present", "no", "missing", "1000", "missing"),
 			wantErr: "no supported package manager detected",
 		},
 	}
@@ -72,6 +78,9 @@ func TestParseHostFacts(t *testing.T) {
 			if got.IsProxmox != test.want.IsProxmox {
 				t.Fatalf("IsProxmox = %v, want %v", got.IsProxmox, test.want.IsProxmox)
 			}
+			if got.SuPresent != test.want.SuPresent {
+				t.Fatalf("SuPresent = %v, want %v", got.SuPresent, test.want.SuPresent)
+			}
 		})
 	}
 }
@@ -87,7 +96,7 @@ func TestStandardRefusal(t *testing.T) {
 	}
 }
 
-func probeOutput(osRelease string, kernel string, arch string, hostname string, pkg string, proxmox string, haos string, truenas string, sudo string, sudoNPW string, uid string, upmgr string) string {
+func probeOutput(osRelease string, kernel string, arch string, hostname string, pkg string, proxmox string, haos string, truenas string, sudo string, sudoNPW string, su string, uid string, upmgr string) string {
 	return strings.Join([]string{
 		"---OS---", osRelease,
 		"---KERNEL---", kernel,
@@ -99,6 +108,7 @@ func probeOutput(osRelease string, kernel string, arch string, hostname string, 
 		"---TRUENAS---", truenas,
 		"---SUDO---", sudo,
 		"---SUDO_NPW---", sudoNPW,
+		"---SU---", su,
 		"---CURRENT_UID---", uid,
 		"---UPMGR_USER---", upmgr,
 	}, "\n")

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/TheOriUHD/patchpilot/internal/core"
 )
@@ -56,5 +57,28 @@ func TestRenderWizardBootstrapClampsProgress(t *testing.T) {
 	}
 	if strings.Contains(rendered, "apt-solver apt-solver apt-solver apt-solver apt-solver apt-solver apt-solver apt-solver apt-solver") {
 		t.Fatalf("bootstrap modal leaked long apt dump: %s", rendered)
+	}
+}
+
+func TestWizardDiagnoseUsesSuBootstrapPath(t *testing.T) {
+	t.Parallel()
+
+	m := newModel(context.Background(), "/tmp/patchpilot.sock")
+	m.wizard = newStandardWizard()
+	m.wizard.step = wizardStepDiagnose
+	m.wizard.hostname = "192.168.10.231"
+	m.wizard.sshUser = "database"
+	m.wizard.password = []byte("user-secret")
+	m.wizard.rootPassword = []byte("root-secret")
+	m.wizard.facts = core.HostFacts{SuPresent: true, SudoPresent: false}
+	m.wizard.diagnosis = &core.PermissionDiagnosis{Kind: "sudo_missing", CanAutoFix: true}
+
+	updated, cmd := m.handleWizardKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+	m = updated.(model)
+	if cmd == nil {
+		t.Fatal("su-capable diagnosis should start bootstrap command")
+	}
+	if m.wizard.step != wizardStepBootstrapping {
+		t.Fatalf("wizard step = %d, want bootstrapping", m.wizard.step)
 	}
 }

@@ -145,6 +145,97 @@ func TestGenerateBootstrapCommandsUsesResolvedPaths(t *testing.T) {
 	}
 }
 
+func TestBuildEscalatedCommandSuUsesPTYAndStdin(t *testing.T) {
+	t.Parallel()
+
+	escalated, err := buildEscalatedCommand(escalationInput{Facts: HostFacts{CurrentUID: "1000", SuPresent: true}, RootPassword: []byte("root-secret")}, "id")
+	if err != nil {
+		t.Fatalf("buildEscalatedCommand() error: %v", err)
+	}
+	if escalated.Mode != escalationSuRoot {
+		t.Fatalf("Mode = %q, want %q", escalated.Mode, escalationSuRoot)
+	}
+	if !escalated.Options.PTY {
+		t.Fatal("su escalation must request a PTY")
+	}
+	if got := string(escalated.Stdin); got != "root-secret\n" {
+		t.Fatalf("stdin = %q, want root password plus newline", got)
+	}
+	if strings.Contains(escalated.Command, "root-secret") {
+		t.Fatalf("root password leaked into command: %q", escalated.Command)
+	}
+	if !strings.Contains(escalated.Command, "su -c") {
+		t.Fatalf("command = %q, want su wrapper", escalated.Command)
+	}
+}
+
+func TestSuBootstrapBatchIsIdempotentAndInstallsSudoWhenMissing(t *testing.T) {
+	t.Parallel()
+
+	commands, err := GenerateBootstrapCommands("ssh-ed25519 AAAA patchpilot", "", pkgmgr.ManagerAPT, map[string]string{
+		"apt-get":   "/usr/bin/apt-get",
+		"apt":       "/usr/bin/apt",
+		"dpkg":      "/usr/bin/dpkg",
+		"test":      "/usr/bin/test",
+		"systemctl": "/usr/bin/systemctl",
+		"reboot":    "/usr/sbin/reboot",
+		"shutdown":  "/usr/sbin/shutdown",
+	})
+	if err != nil {
+		t.Fatalf("GenerateBootstrapCommands() error: %v", err)
+	}
+	batch, err := suBootstrapBatch(pkgmgr.ManagerAPT, commands, true)
+	if err != nil {
+		t.Fatalf("suBootstrapBatch() error: %v", err)
+	}
+	for _, want := range []string{
+		"apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y sudo",
+		"id patchpilot >/dev/null 2>&1 || useradd",
+		"install -d -m 0700 -o patchpilot -g patchpilot /home/patchpilot/.ssh",
+		"> /home/patchpilot/.ssh/authorized_keys",
+		"cat > /etc/sudoers.d/patchpilot",
+		"visudo -cf /etc/sudoers.d/patchpilot",
+	} {
+		if !strings.Contains(batch, want) {
+			t.Fatalf("batch missing %q:\n%s", want, batch)
+		}
+	}
+}
+
+func TestBootstrapStandardWithRunnerUsesSuBatch(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeRunner{responses: map[string]fakeResponse{
+		"resolve_patchpilot_command": {result: remotessh.CommandResult{Stdout: aptResolvedPathsOutput()}},
+	}}
+	_, err := BootstrapStandardWithRunner(context.Background(), runner, BootstrapOptions{
+		Facts:        HostFacts{CurrentUID: "1000", PackageManager: pkgmgr.ManagerAPT, SuPresent: true},
+		Manager:      pkgmgr.ManagerAPT,
+		Password:     []byte("user-secret"),
+		RootPassword: []byte("root-secret"),
+		PublicKey:    "ssh-ed25519 AAAA patchpilot",
+	}, nil)
+	if err != nil {
+		t.Fatalf("BootstrapStandardWithRunner() error: %v", err)
+	}
+	batchIndex := runner.indexContaining("apt-get install -y sudo")
+	if batchIndex == -1 {
+		t.Fatalf("commands = %#v; want su bootstrap batch", runner.commands)
+	}
+	if !runner.options[batchIndex].PTY {
+		t.Fatal("su bootstrap batch did not request PTY")
+	}
+	if !strings.Contains(runner.commands[batchIndex], "su -c") {
+		t.Fatalf("batch command = %q, want su wrapper", runner.commands[batchIndex])
+	}
+	if strings.Contains(strings.Join(runner.commands, "\n"), "root-secret") || strings.Contains(strings.Join(runner.commands, "\n"), "user-secret") {
+		t.Fatalf("secret leaked into commands: %#v", runner.commands)
+	}
+	if got := string(runner.stdin[batchIndex]); got != "root-secret\n" {
+		t.Fatalf("batch stdin = %q, want root password plus newline", got)
+	}
+}
+
 func aptResolvedPathsOutput() string {
 	return "apt-get\t/usr/bin/apt-get\napt\t/usr/bin/apt\ndpkg\t/usr/bin/dpkg\ntest\t/usr/bin/test\nsystemctl\t/usr/bin/systemctl\nreboot\t/usr/sbin/reboot\nshutdown\t/usr/sbin/shutdown\n"
 }
@@ -156,12 +247,20 @@ type fakeResponse struct {
 
 type fakeRunner struct {
 	commands  []string
+	stdin     [][]byte
+	options   []remotessh.RunOptions
 	closed    bool
 	responses map[string]fakeResponse
 }
 
-func (r *fakeRunner) Run(_ context.Context, command string, _ []byte) (remotessh.CommandResult, error) {
+func (r *fakeRunner) Run(ctx context.Context, command string, stdin []byte) (remotessh.CommandResult, error) {
+	return r.RunWithOptions(ctx, command, stdin, remotessh.RunOptions{})
+}
+
+func (r *fakeRunner) RunWithOptions(_ context.Context, command string, stdin []byte, options remotessh.RunOptions) (remotessh.CommandResult, error) {
 	r.commands = append(r.commands, command)
+	r.stdin = append(r.stdin, append([]byte{}, stdin...))
+	r.options = append(r.options, options)
 	for needle, response := range r.responses {
 		if strings.Contains(command, needle) {
 			return response.result, response.err

@@ -27,6 +27,11 @@ type StreamChunk struct {
 	Data   []byte
 }
 
+// RunOptions configures one remote command execution.
+type RunOptions struct {
+	PTY bool
+}
+
 // Runner executes commands on a remote host.
 type Runner interface {
 	Run(ctx context.Context, command string, stdin []byte) (CommandResult, error)
@@ -62,6 +67,11 @@ func ConnectKey(ctx context.Context, host string, port int, user string, signer 
 
 // Run executes a command and captures stdout, stderr, and exit code.
 func (c *Client) Run(ctx context.Context, command string, stdin []byte) (CommandResult, error) {
+	return c.RunWithOptions(ctx, command, stdin, RunOptions{})
+}
+
+// RunWithOptions executes a command with optional SSH session settings.
+func (c *Client) RunWithOptions(ctx context.Context, command string, stdin []byte, options RunOptions) (CommandResult, error) {
 	if err := ctx.Err(); err != nil {
 		return CommandResult{}, err
 	}
@@ -76,6 +86,11 @@ func (c *Client) Run(ctx context.Context, command string, stdin []byte) (Command
 	var stderr bytes.Buffer
 	session.Stdout = &stdout
 	session.Stderr = &stderr
+	if options.PTY {
+		if err := session.RequestPty("xterm", 80, 24, xssh.TerminalModes{xssh.ECHO: 0}); err != nil {
+			return CommandResult{}, fmt.Errorf("request ssh pty: %w", err)
+		}
+	}
 	if len(stdin) > 0 {
 		session.Stdin = bytes.NewReader(stdin)
 	}

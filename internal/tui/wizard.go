@@ -189,9 +189,18 @@ func (m model) handleWizardDiagnoseKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "f":
+		if m.wizard.diagnosis != nil && !m.wizard.diagnosis.CanAutoFix {
+			m.status = "Automatic fix is unavailable; use pre-install mode"
+			return m, nil
+		}
 		if len(m.wizard.rootPassword) == 0 {
 			m.status = "Root password is required for automatic fix"
 			return m, nil
+		}
+		if m.wizard.facts.SuPresent {
+			m.wizard.step = wizardStepBootstrapping
+			m.wizard.events = nil
+			return m, startBootstrapCmd(m.ctx, m.client, m.wizard)
 		}
 		return m, rootAssistCmd(m.ctx, m.client, m.wizard)
 	case "p":
@@ -338,6 +347,8 @@ func (m model) handleWizardMsg(msg wizardMsg) (model, tea.Cmd) {
 			m.wizard.errorMessage = msg.err.Error()
 			return m, nil
 		}
+		core.ZeroBytes(m.wizard.rootPassword)
+		m.wizard.rootPassword = nil
 		m.wizard.sessionID = msg.session.ID
 		m.wizard.streamEvents = msg.events
 		m.wizard.streamErrors = msg.errors
@@ -535,7 +546,15 @@ func (m model) renderWizardDiagnose() string {
 		builder.WriteString(command)
 		builder.WriteByte('\n')
 	}
-	builder.WriteString("\nf Fix automatically   p Pre-install mode   Esc cancel")
+	if diagnosis.CanAutoFix {
+		if m.wizard.facts.SuPresent {
+			builder.WriteString("\nf Bootstrap with su   p Pre-install mode   Esc cancel")
+		} else {
+			builder.WriteString("\nf Fix automatically   p Pre-install mode   Esc cancel")
+		}
+	} else {
+		builder.WriteString("\np Pre-install mode   Esc cancel")
+	}
 	return m.styles.Card.Width(76).Render(builder.String())
 }
 
@@ -796,9 +815,10 @@ func rootAssistCmd(ctx context.Context, client *ipc.Client, wizard standardWizar
 }
 
 func startBootstrapCmd(ctx context.Context, client *ipc.Client, wizard standardWizard) tea.Cmd {
-	input := core.BootstrapStartInput{Hostname: strings.TrimSpace(wizard.hostname), SSHPort: 22, SSHUser: strings.TrimSpace(wizard.sshUser), Password: append([]byte{}, wizard.password...), Facts: wizard.facts}
+	input := core.BootstrapStartInput{Hostname: strings.TrimSpace(wizard.hostname), SSHPort: 22, SSHUser: strings.TrimSpace(wizard.sshUser), Password: append([]byte{}, wizard.password...), RootPassword: append([]byte{}, wizard.rootPassword...), Facts: wizard.facts}
 	return func() tea.Msg {
 		defer core.ZeroBytes(input.Password)
+		defer core.ZeroBytes(input.RootPassword)
 		requestCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 		session, err := client.StartBootstrap(requestCtx, input)

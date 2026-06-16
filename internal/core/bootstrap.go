@@ -40,6 +40,7 @@ type BootstrapOptions struct {
 	Facts        HostFacts
 	Manager      pkgmgr.PackageManager
 	Password     []byte
+	RootPassword []byte
 	PublicKey    string
 	SourceIP     string
 	OriginalUser string
@@ -95,7 +96,7 @@ func GenerateBootstrapCommands(publicKey string, sourceIP string, manager pkgmgr
 }
 
 // RollbackBootstrap removes bootstrap artifacts that may have been created before failure or cancellation.
-func RollbackBootstrap(ctx context.Context, runner remotessh.Runner, facts HostFacts, password []byte, manager pkgmgr.PackageManager, resolvedPaths map[string]string, reporter BootstrapReporter) {
+func RollbackBootstrap(ctx context.Context, runner remotessh.Runner, facts HostFacts, password []byte, rootPassword []byte, manager pkgmgr.PackageManager, resolvedPaths map[string]string, reporter BootstrapReporter) {
 	reporter = nonNilReporter(reporter)
 	commands, err := GenerateBootstrapCommands("ssh-ed25519 AAAA rollback-only", "", manager, resolvedPaths)
 	if err != nil {
@@ -107,8 +108,7 @@ func RollbackBootstrap(ctx context.Context, runner remotessh.Runner, facts HostF
 		rollback = append(rollback, commands.RollbackUser)
 	}
 	for _, command := range rollback {
-		escalated, input := escalate(facts, command, password)
-		_, _ = runner.Run(ctx, escalated, input)
+		_, _, _ = runEscalated(ctx, runner, escalationInput{Facts: facts, Password: password, RootPassword: rootPassword}, command)
 	}
 	reportBootstrapEvent(reporter, BootstrapEvent{Step: "Rollback", Status: BootstrapStepSuccess, Message: "Best-effort rollback complete"})
 }
@@ -119,6 +119,9 @@ func BootstrapStandardWithRunner(ctx context.Context, runner remotessh.Runner, o
 	manager := options.Manager
 	if manager == "" {
 		manager = options.Facts.PackageManager
+	}
+	if shouldUseSuBootstrap(options) {
+		return bootstrapStandardWithSu(ctx, runner, options, manager, reporter)
 	}
 
 	if err := runEscalatedStep(ctx, runner, reporter, options.Facts, options.Password, "Privilege check", "Verifying sudo/root access", "true"); err != nil {
@@ -147,11 +150,9 @@ func BootstrapStandardWithRunner(ctx context.Context, runner remotessh.Runner, o
 		return BootstrapResult{}, err
 	}
 
-	validateCommand, validateInput := escalate(options.Facts, commands.ValidateSudoers, options.Password)
 	reportBootstrapEvent(reporter, BootstrapEvent{Step: "Validating sudoers with visudo -cf", Status: BootstrapStepRunning, Message: "Checking sudoers syntax before closing privileged session"})
-	if result, err := runner.Run(ctx, validateCommand, validateInput); err != nil {
-		rollbackCommand, rollbackInput := escalate(options.Facts, commands.RollbackSudoers, options.Password)
-		_, rollbackErr := runner.Run(ctx, rollbackCommand, rollbackInput)
+	if result, _, err := runEscalated(ctx, runner, escalationInput{Facts: options.Facts, Password: options.Password}, commands.ValidateSudoers); err != nil {
+		_, _, rollbackErr := runEscalated(ctx, runner, escalationInput{Facts: options.Facts, Password: options.Password}, commands.RollbackSudoers)
 		message := strings.TrimSpace(result.Stderr + "\n" + result.Stdout)
 		if rollbackErr != nil {
 			message = message + "; rollback failed: " + rollbackErr.Error()
@@ -162,6 +163,112 @@ func BootstrapStandardWithRunner(ctx context.Context, runner remotessh.Runner, o
 	reportBootstrapEvent(reporter, BootstrapEvent{Step: "Validating sudoers with visudo -cf", Status: BootstrapStepSuccess, Message: "sudoers syntax is valid"})
 
 	return BootstrapResult{ResolvedPaths: paths, SudoersEntry: mustSudoers(manager, paths)}, nil
+}
+
+func shouldUseSuBootstrap(options BootstrapOptions) bool {
+	if options.Facts.CurrentUID == "0" || options.Facts.SudoNoPassword || !options.Facts.SuPresent || len(options.RootPassword) == 0 {
+		return false
+	}
+	return !options.Facts.SudoPresent || len(options.RootPassword) > 0
+}
+
+func bootstrapStandardWithSu(ctx context.Context, runner remotessh.Runner, options BootstrapOptions, manager pkgmgr.PackageManager, reporter BootstrapReporter) (BootstrapResult, error) {
+	reporter = nonNilReporter(reporter)
+	escalation := escalationInput{Facts: options.Facts, Password: options.Password, RootPassword: options.RootPassword}
+	reportBootstrapEvent(reporter, BootstrapEvent{Step: "Privilege check", Status: BootstrapStepRunning, Message: "Using su through the existing SSH session"})
+	if result, _, err := runEscalated(ctx, runner, escalation, "true"); err != nil {
+		message := suFailureMessage(result, err)
+		reportBootstrapEvent(reporter, BootstrapEvent{Step: "Privilege check", Status: BootstrapStepFailed, Message: message})
+		return BootstrapResult{}, fmt.Errorf("%s", message)
+	}
+	reportBootstrapEvent(reporter, BootstrapEvent{Step: "Privilege check", Status: BootstrapStepSuccess, Message: "su authentication accepted"})
+
+	paths, err := resolveCommandPathsWithEscalation(ctx, runner, reporter, escalation, manager)
+	if err != nil {
+		return BootstrapResult{}, err
+	}
+	commands, err := GenerateBootstrapCommands(options.PublicKey, options.SourceIP, manager, paths)
+	if err != nil {
+		return BootstrapResult{}, err
+	}
+	batch, err := suBootstrapBatch(manager, commands, !options.Facts.SudoPresent)
+	if err != nil {
+		return BootstrapResult{}, err
+	}
+	reportBootstrapEvent(reporter, BootstrapEvent{Step: "Bootstrapping with su", Status: BootstrapStepRunning, Message: "Installing sudo if needed and configuring patchpilot"})
+	result, _, err := runEscalated(ctx, runner, escalation, batch)
+	if err != nil {
+		message := suFailureMessage(result, err)
+		reportBootstrapEvent(reporter, BootstrapEvent{Step: "Bootstrapping with su", Status: BootstrapStepFailed, Message: message})
+		return BootstrapResult{}, fmt.Errorf("bootstrap with su: %w", err)
+	}
+	reportBootstrapEvent(reporter, BootstrapEvent{Step: "Bootstrapping with su", Status: BootstrapStepSuccess, Message: "patchpilot user and sudoers configured"})
+	return BootstrapResult{ResolvedPaths: paths, SudoersEntry: mustSudoers(manager, paths)}, nil
+}
+
+func suBootstrapBatch(manager pkgmgr.PackageManager, commands BootstrapCommands, installSudo bool) (string, error) {
+	var builder strings.Builder
+	builder.WriteString("set -eu\n")
+	builder.WriteString("patchpilot_step() { printf 'patchpilot bootstrap: %s\\n' \"$1\"; }\n")
+	if installSudo {
+		install, err := installSudoCommand(manager)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString("patchpilot_step 'install sudo'\n")
+		builder.WriteString(install)
+		builder.WriteByte('\n')
+	}
+	builder.WriteString("patchpilot_step 'create patchpilot user'\n")
+	builder.WriteString(commands.CreateUser)
+	builder.WriteByte('\n')
+	builder.WriteString("patchpilot_step 'prepare ssh directory'\n")
+	builder.WriteString(commands.CreateSSHDir)
+	builder.WriteByte('\n')
+	builder.WriteString("patchpilot_step 'install authorized key'\n")
+	builder.WriteString(commands.InstallPublicKey)
+	builder.WriteByte('\n')
+	builder.WriteString("patchpilot_step 'prepare sudoers directory'\n")
+	builder.WriteString("install -d -m 0750 /etc/sudoers.d\n")
+	builder.WriteString("patchpilot_step 'write sudoers'\n")
+	builder.WriteString(commands.WriteSudoers)
+	builder.WriteByte('\n')
+	builder.WriteString("patchpilot_step 'validate sudoers'\n")
+	builder.WriteString(commands.ValidateSudoers)
+	builder.WriteByte('\n')
+	builder.WriteString("patchpilot_step 'complete'\n")
+	return builder.String(), nil
+}
+
+func installSudoCommand(manager pkgmgr.PackageManager) (string, error) {
+	switch manager {
+	case pkgmgr.ManagerAPT, pkgmgr.ManagerAPTProxmox:
+		return "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y sudo", nil
+	case pkgmgr.ManagerDNF:
+		return "dnf install -y sudo", nil
+	case pkgmgr.ManagerPacman:
+		return "pacman -Sy --noconfirm sudo", nil
+	case pkgmgr.ManagerZypper:
+		return "zypper -n install sudo", nil
+	case pkgmgr.ManagerAPK:
+		return "apk add sudo", nil
+	default:
+		return "", fmt.Errorf("installing sudo is not supported for package manager %q; use pre-install mode", manager)
+	}
+}
+
+func suFailureMessage(result remotessh.CommandResult, err error) string {
+	if suAuthenticationFailed(result, err) {
+		return "could not escalate with su: root password was rejected"
+	}
+	message := strings.TrimSpace(result.Stderr + "\n" + result.Stdout)
+	if message != "" {
+		return message
+	}
+	if err != nil {
+		return err.Error()
+	}
+	return "su escalation failed"
 }
 
 // ResolveSourceIP returns the local IP address used to reach the target host.
@@ -186,17 +293,28 @@ func resolveCommandPaths(ctx context.Context, runner remotessh.Runner, reporter 
 	if err != nil {
 		return nil, err
 	}
-	return resolveRequiredCommandPaths(ctx, runner, reporter, facts, password, required)
+	return resolveRequiredCommandPathsWithEscalation(ctx, runner, reporter, escalationInput{Facts: facts, Password: password}, required)
 }
 
 func resolveRequiredCommandPaths(ctx context.Context, runner remotessh.Runner, reporter BootstrapReporter, facts HostFacts, password []byte, required []string) (map[string]string, error) {
+	return resolveRequiredCommandPathsWithEscalation(ctx, runner, reporter, escalationInput{Facts: facts, Password: password}, required)
+}
+
+func resolveCommandPathsWithEscalation(ctx context.Context, runner remotessh.Runner, reporter BootstrapReporter, escalation escalationInput, manager pkgmgr.PackageManager) (map[string]string, error) {
+	required, err := pkgmgr.RequiredCommands(manager)
+	if err != nil {
+		return nil, err
+	}
+	return resolveRequiredCommandPathsWithEscalation(ctx, runner, reporter, escalation, required)
+}
+
+func resolveRequiredCommandPathsWithEscalation(ctx context.Context, runner remotessh.Runner, reporter BootstrapReporter, escalation escalationInput, required []string) (map[string]string, error) {
 	reporter = nonNilReporter(reporter)
 	for _, name := range required {
 		reportBootstrapEvent(reporter, BootstrapEvent{Step: commandPathStep(name), Status: BootstrapStepRunning, Message: "Resolving with command -v -p, which, and canonical paths"})
 	}
 
-	command, input := escalate(facts, commandPathResolutionScript(required), password)
-	result, runErr := runner.Run(ctx, command, input)
+	result, _, runErr := runEscalated(ctx, runner, escalation, commandPathResolutionScript(required))
 	paths, parseErr := parseResolvedCommandPaths(result.Stdout, required)
 	if runErr != nil {
 		missing := missingCommandFromResolverOutput(result.Stderr)
@@ -341,20 +459,21 @@ func runStep(ctx context.Context, runner remotessh.Runner, reporter BootstrapRep
 }
 
 func runEscalatedStep(ctx context.Context, runner remotessh.Runner, reporter BootstrapReporter, facts HostFacts, password []byte, step string, message string, command string) error {
-	escalatedCommand, input := escalate(facts, command, password)
-	return runStep(ctx, runner, reporter, step, message, escalatedCommand, input)
-}
-
-func escalate(facts HostFacts, command string, password []byte) (string, []byte) {
-	if facts.CurrentUID == "0" {
-		return "sh -c " + shellQuote(command), nil
+	reportBootstrapEvent(reporter, BootstrapEvent{Step: step, Status: BootstrapStepRunning, Message: message})
+	result, escalated, err := runEscalated(ctx, runner, escalationInput{Facts: facts, Password: password}, command)
+	if err != nil {
+		failure := strings.TrimSpace(result.Stderr + "\n" + result.Stdout)
+		if failure == "" {
+			failure = err.Error()
+		}
+		if escalated.Mode == escalationSuRoot && suAuthenticationFailed(result, err) {
+			failure = "could not escalate with su: root password was rejected"
+		}
+		reportBootstrapEvent(reporter, BootstrapEvent{Step: step, Status: BootstrapStepFailed, Message: failure})
+		return fmt.Errorf("%s: %w", step, err)
 	}
-	if facts.SudoNoPassword {
-		return "sudo -n sh -c " + shellQuote(command), nil
-	}
-	input := append([]byte{}, password...)
-	input = append(input, '\n')
-	return "sudo -S -p '' sh -c " + shellQuote(command), input
+	reportBootstrapEvent(reporter, BootstrapEvent{Step: step, Status: BootstrapStepSuccess, Message: strings.TrimSpace(result.Stdout)})
+	return nil
 }
 
 func hardenedAuthorizedKey(publicKey string, sourceIP string) string {

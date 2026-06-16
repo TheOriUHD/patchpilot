@@ -286,7 +286,7 @@ func (c *Client) RootAssist(ctx context.Context, input core.RootAssistInput) err
 // StartBootstrap starts Standard bootstrap and returns a stream id.
 func (c *Client) StartBootstrap(ctx context.Context, input core.BootstrapStartInput) (core.BootstrapSession, error) {
 	var session core.BootstrapSession
-	body := map[string]any{"hostname": input.Hostname, "ssh_port": input.SSHPort, "ssh_user": input.SSHUser, "password": string(input.Password), "facts": input.Facts}
+	body := map[string]any{"hostname": input.Hostname, "ssh_port": input.SSHPort, "ssh_user": input.SSHUser, "password": string(input.Password), "root_password": string(input.RootPassword), "facts": input.Facts}
 	if err := c.doJSON(ctx, http.MethodPost, "/api/wizard/standard/bootstrap", body, &session); err != nil {
 		return core.BootstrapSession{}, err
 	}

@@ -51,8 +51,10 @@ func RegisterWizard(router chi.Router, service *core.HostService) {
 				return
 			}
 			password := []byte(input.Password)
+			rootPassword := []byte(input.RootPassword)
 			defer core.ZeroBytes(password)
-			session, err := service.StartBootstrap(req.Context(), core.BootstrapStartInput{Hostname: input.Hostname, SSHPort: input.SSHPort, SSHUser: input.SSHUser, Password: password, Facts: input.Facts})
+			defer core.ZeroBytes(rootPassword)
+			session, err := service.StartBootstrap(req.Context(), core.BootstrapStartInput{Hostname: input.Hostname, SSHPort: input.SSHPort, SSHUser: input.SSHUser, Password: password, RootPassword: rootPassword, Facts: input.Facts})
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, err)
 				return
@@ -160,11 +162,12 @@ type rootAssistRequest struct {
 }
 
 type bootstrapStartRequest struct {
-	Hostname string         `json:"hostname"`
-	SSHPort  int            `json:"ssh_port"`
-	SSHUser  string         `json:"ssh_user"`
-	Password string         `json:"password"`
-	Facts    core.HostFacts `json:"facts"`
+	Hostname     string         `json:"hostname"`
+	SSHPort      int            `json:"ssh_port"`
+	SSHUser      string         `json:"ssh_user"`
+	Password     string         `json:"password"`
+	RootPassword string         `json:"root_password"`
+	Facts        core.HostFacts `json:"facts"`
 }
 
 type apiHostRequest struct {

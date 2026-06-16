@@ -79,11 +79,12 @@ type RootAssistInput struct {
 
 // BootstrapStartInput starts a Standard bootstrap stream.
 type BootstrapStartInput struct {
-	Hostname string    `json:"hostname"`
-	SSHPort  int       `json:"ssh_port"`
-	SSHUser  string    `json:"ssh_user"`
-	Password []byte    `json:"-"`
-	Facts    HostFacts `json:"facts"`
+	Hostname     string    `json:"hostname"`
+	SSHPort      int       `json:"ssh_port"`
+	SSHUser      string    `json:"ssh_user"`
+	Password     []byte    `json:"-"`
+	RootPassword []byte    `json:"-"`
+	Facts        HostFacts `json:"facts"`
 }
 
 // BootstrapSession contains a created stream id.
@@ -184,12 +185,16 @@ func (s *HostService) StartBootstrap(ctx context.Context, input BootstrapStartIn
 		return BootstrapSession{}, err
 	}
 	password := append([]byte{}, input.Password...)
+	rootPassword := append([]byte{}, input.RootPassword...)
+	sessionInput := input
+	sessionInput.Password = nil
+	sessionInput.RootPassword = nil
 	runCtx, cancel := context.WithCancel(context.Background())
 	s.mu.Lock()
-	s.sessions[sessionID] = bootstrapSessionState{Input: input, Cancel: cancel}
+	s.sessions[sessionID] = bootstrapSessionState{Input: sessionInput, Cancel: cancel}
 	s.mu.Unlock()
 	bootstrapDebugf("StartBootstrap: spawning runBootstrapSession session=%s host=%s user=%s", sessionID, input.Hostname, input.SSHUser)
-	go s.runBootstrapSession(runCtx, sessionID, input, password)
+	go s.runBootstrapSession(runCtx, sessionID, sessionInput, password, rootPassword)
 	bootstrapDebugf("StartBootstrap: goroutine spawned session=%s", sessionID)
 	return BootstrapSession{ID: sessionID}, nil
 }
@@ -402,11 +407,12 @@ func (r streamReporter) Report(event BootstrapEvent) {
 	bootstrapDebugf("streamReporter.Report: after publish bootstrap.step session=%s step=%q", r.sessionID, event.Step)
 }
 
-func (s *HostService) runBootstrapSession(ctx context.Context, sessionID string, input BootstrapStartInput, password []byte) {
+func (s *HostService) runBootstrapSession(ctx context.Context, sessionID string, input BootstrapStartInput, password []byte, rootPassword []byte) {
 	bootstrapDebugf("runBootstrapSession: enter session=%s host=%s", sessionID, input.Hostname)
 	defer func() {
 		bootstrapDebugf("runBootstrapSession: before password zero session=%s", sessionID)
 		ZeroBytes(password)
+		ZeroBytes(rootPassword)
 		bootstrapDebugf("runBootstrapSession: after password zero session=%s", sessionID)
 	}()
 	defer func() {
@@ -430,7 +436,7 @@ func (s *HostService) runBootstrapSession(ctx context.Context, sessionID string,
 		if completed || privilegedRunner == nil {
 			return
 		}
-		RollbackBootstrap(context.Background(), privilegedRunner, input.Facts, password, input.Facts.PackageManager, resolvedPaths, reporter)
+		RollbackBootstrap(context.Background(), privilegedRunner, input.Facts, password, rootPassword, input.Facts.PackageManager, resolvedPaths, reporter)
 	}()
 	reportError := func(step string, err error) {
 		bootstrapDebugf("runBootstrapSession: reportError session=%s step=%q err=%v", sessionID, step, err)
@@ -465,6 +471,7 @@ func (s *HostService) runBootstrapSession(ctx context.Context, sessionID string,
 		Facts:        input.Facts,
 		Manager:      input.Facts.PackageManager,
 		Password:     password,
+		RootPassword: rootPassword,
 		PublicKey:    keypair.PublicKey,
 		SourceIP:     sourceIP,
 		OriginalUser: input.SSHUser,
@@ -536,13 +543,18 @@ func (s *HostService) diagnosePrivilege(ctx context.Context, runner remotessh.Ru
 		return nil
 	}
 	if !facts.SudoPresent {
-		return &PermissionDiagnosis{Kind: "sudo_missing", Reason: "sudo is not installed", PathForward: "Provide the root password so patchpilot can install sudo and add the user to the admin group.", CanAutoFix: true, PreinstallOK: true, ManualFix: manualFix(facts.PackageManager, user, true)}
+		if facts.SuPresent {
+			return &PermissionDiagnosis{Kind: "sudo_missing", Reason: "sudo is not installed", PathForward: "Enter the root password so patchpilot can use su over the existing SSH session, install sudo, and configure the patchpilot user.", CanAutoFix: true, PreinstallOK: true, ManualFix: manualFix(facts.PackageManager, user, true)}
+		}
+		return &PermissionDiagnosis{Kind: "sudo_missing", Reason: "sudo is not installed and su is unavailable", PathForward: "Use pre-install mode to install sudo and prepare the patchpilot user manually.", CanAutoFix: false, PreinstallOK: true, ManualFix: manualFix(facts.PackageManager, user, true)}
 	}
-	command, input := escalate(facts, "true", password)
-	if _, err := runner.Run(ctx, command, input); err == nil {
+	if _, _, err := runEscalated(ctx, runner, escalationInput{Facts: facts, Password: password}, "true"); err == nil {
 		return nil
 	}
-	return &PermissionDiagnosis{Kind: "sudo_denied", Reason: "the SSH user cannot run sudo with the supplied password", PathForward: "Provide the root password so patchpilot can add the user to the admin group, or use pre-install mode.", CanAutoFix: true, PreinstallOK: true, ManualFix: manualFix(facts.PackageManager, user, false)}
+	if facts.SuPresent {
+		return &PermissionDiagnosis{Kind: "sudo_denied", Reason: "the SSH user cannot run sudo with the supplied password", PathForward: "Enter the root password so patchpilot can use su over the existing SSH session and repair the patchpilot sudoers policy.", CanAutoFix: true, PreinstallOK: true, ManualFix: manualFix(facts.PackageManager, user, false)}
+	}
+	return &PermissionDiagnosis{Kind: "sudo_denied", Reason: "the SSH user cannot run sudo with the supplied password and su is unavailable", PathForward: "Use pre-install mode to configure sudo manually.", CanAutoFix: false, PreinstallOK: true, ManualFix: manualFix(facts.PackageManager, user, false)}
 }
 
 func (s *HostService) dryRunExistingHost(ctx context.Context, host Host) (pkgmgr.DryRunResult, error) {
