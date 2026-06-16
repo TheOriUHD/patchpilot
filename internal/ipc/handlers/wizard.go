@@ -185,6 +185,7 @@ type apiHostCommitRequest struct {
 }
 
 func serveSSE(ctx context.Context, w http.ResponseWriter, events <-chan stream.Event) {
+	bootstrapStreamDebugf("serveSSE: start")
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -197,15 +198,21 @@ func serveSSE(ctx context.Context, w http.ResponseWriter, events <-chan stream.E
 	for {
 		select {
 		case <-ctx.Done():
+			bootstrapStreamDebugf("serveSSE: context done: %v", ctx.Err())
 			return
 		case event, ok := <-events:
 			if !ok {
+				bootstrapStreamDebugf("serveSSE: events channel closed")
 				return
 			}
+			bootstrapStreamDebugf("serveSSE: forwarding event type=%q id=%d", event.Type, event.ID)
 			_, _ = fmt.Fprintf(w, "id: %d\n", event.ID)
 			_, _ = fmt.Fprintf(w, "event: %s\n", event.Type)
 			_, _ = fmt.Fprintf(w, "data: %s\n\n", string(event.Data))
 			flusher.Flush()
+			if event.Type == "bootstrap.complete" {
+				bootstrapStreamDebugf("serveSSE: forwarded final bootstrap.complete id=%d", event.ID)
+			}
 		}
 	}
 }

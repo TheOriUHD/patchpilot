@@ -188,7 +188,9 @@ func (s *HostService) StartBootstrap(ctx context.Context, input BootstrapStartIn
 	s.mu.Lock()
 	s.sessions[sessionID] = bootstrapSessionState{Input: input, Cancel: cancel}
 	s.mu.Unlock()
+	bootstrapDebugf("StartBootstrap: spawning runBootstrapSession session=%s host=%s user=%s", sessionID, input.Hostname, input.SSHUser)
 	go s.runBootstrapSession(runCtx, sessionID, input, password)
+	bootstrapDebugf("StartBootstrap: goroutine spawned session=%s", sessionID)
 	return BootstrapSession{ID: sessionID}, nil
 }
 
@@ -350,21 +352,27 @@ func (s *HostService) reconnectPatchpilotWithRetry(ctx context.Context, hostname
 	attempts := len(delays) + 1
 	var lastErr error
 	for attempt := 1; attempt <= attempts; attempt++ {
+		bootstrapDebugf("reconnectPatchpilotWithRetry: attempt %d/%d host=%s", attempt, attempts, hostname)
 		reporter.Report(BootstrapEvent{Step: "Reconnecting as patchpilot with key", Status: BootstrapStepRunning, Message: fmt.Sprintf("attempt %d/%d", attempt, attempts)})
 		runner, err := s.connectKeyTo(ctx, hostname, port, "patchpilot", keypair)
 		if err == nil {
+			bootstrapDebugf("reconnectPatchpilotWithRetry: success attempt %d/%d host=%s", attempt, attempts, hostname)
 			return runner, nil
 		}
+		bootstrapDebugf("reconnectPatchpilotWithRetry: failure attempt %d/%d host=%s err=%v", attempt, attempts, hostname, err)
 		lastErr = err
 		if attempt == attempts {
 			break
 		}
 		select {
 		case <-ctx.Done():
+			bootstrapDebugf("reconnectPatchpilotWithRetry: context done host=%s err=%v", hostname, ctx.Err())
 			return nil, ctx.Err()
 		case <-time.After(delays[attempt-1]):
+			bootstrapDebugf("reconnectPatchpilotWithRetry: retry delay elapsed attempt %d/%d host=%s", attempt, attempts, hostname)
 		}
 	}
+	bootstrapDebugf("reconnectPatchpilotWithRetry: exhausted host=%s err=%v", hostname, lastErr)
 	return nil, lastErr
 }
 
@@ -389,19 +397,33 @@ type streamReporter struct {
 }
 
 func (r streamReporter) Report(event BootstrapEvent) {
+	bootstrapDebugf("streamReporter.Report: before publish bootstrap.step session=%s step=%q status=%q message=%q", r.sessionID, event.Step, event.Status, event.Message)
 	_ = r.hub.Publish(r.sessionID, "bootstrap.step", event)
+	bootstrapDebugf("streamReporter.Report: after publish bootstrap.step session=%s step=%q", r.sessionID, event.Step)
 }
 
 func (s *HostService) runBootstrapSession(ctx context.Context, sessionID string, input BootstrapStartInput, password []byte) {
-	defer ZeroBytes(password)
-	defer s.Streams.Complete(sessionID)
+	bootstrapDebugf("runBootstrapSession: enter session=%s host=%s", sessionID, input.Hostname)
+	defer func() {
+		bootstrapDebugf("runBootstrapSession: before password zero session=%s", sessionID)
+		ZeroBytes(password)
+		bootstrapDebugf("runBootstrapSession: after password zero session=%s", sessionID)
+	}()
+	defer func() {
+		bootstrapDebugf("runBootstrapSession: before Streams.Complete session=%s", sessionID)
+		s.Streams.Complete(sessionID)
+		bootstrapDebugf("runBootstrapSession: after Streams.Complete session=%s", sessionID)
+	}()
+	defer bootstrapDebugf("runBootstrapSession: exit session=%s", sessionID)
 	reporter := streamReporter{hub: s.Streams, sessionID: sessionID}
 	completed := false
 	var privilegedRunner remotessh.Runner
 	resolvedPaths := map[string]string{}
 	defer func() {
 		if privilegedRunner != nil {
+			bootstrapDebugf("runBootstrapSession: before privilegedRunner.Close session=%s", sessionID)
 			_ = privilegedRunner.Close()
+			bootstrapDebugf("runBootstrapSession: after privilegedRunner.Close session=%s", sessionID)
 		}
 	}()
 	defer func() {
@@ -411,8 +433,11 @@ func (s *HostService) runBootstrapSession(ctx context.Context, sessionID string,
 		RollbackBootstrap(context.Background(), privilegedRunner, input.Facts, password, input.Facts.PackageManager, resolvedPaths, reporter)
 	}()
 	reportError := func(step string, err error) {
+		bootstrapDebugf("runBootstrapSession: reportError session=%s step=%q err=%v", sessionID, step, err)
 		reporter.Report(BootstrapEvent{Step: step, Status: BootstrapStepFailed, Message: err.Error()})
+		bootstrapDebugf("runBootstrapSession: before publish bootstrap.error session=%s step=%q", sessionID, step)
 		_ = s.Streams.Publish(sessionID, "bootstrap.error", map[string]string{"error": err.Error()})
+		bootstrapDebugf("runBootstrapSession: after publish bootstrap.error session=%s step=%q", sessionID, step)
 	}
 
 	keypair, err := s.Keys.Ensure(ctx)
@@ -421,11 +446,13 @@ func (s *HostService) runBootstrapSession(ctx context.Context, sessionID string,
 		return
 	}
 	reporter.Report(BootstrapEvent{Step: "Connecting via SSH as " + input.SSHUser, Status: BootstrapStepRunning, Message: input.Hostname})
+	bootstrapDebugf("runBootstrapSession: before ConnectPassword session=%s", sessionID)
 	runner, err := remotessh.ConnectPassword(ctx, input.Hostname, normalizePort(input.SSHPort), input.SSHUser, password)
 	if err != nil {
 		reportError("Connecting via SSH as "+input.SSHUser, err)
 		return
 	}
+	bootstrapDebugf("runBootstrapSession: after ConnectPassword session=%s", sessionID)
 	privilegedRunner = runner
 	reporter.Report(BootstrapEvent{Step: "Connecting via SSH as " + input.SSHUser, Status: BootstrapStepSuccess, Message: "connected"})
 
@@ -433,6 +460,7 @@ func (s *HostService) runBootstrapSession(ctx context.Context, sessionID string,
 	if err != nil {
 		sourceIP = ""
 	}
+	bootstrapDebugf("runBootstrapSession: before BootstrapStandardWithRunner session=%s", sessionID)
 	bootstrapResult, err := BootstrapStandardWithRunner(ctx, runner, BootstrapOptions{
 		Facts:        input.Facts,
 		Manager:      input.Facts.PackageManager,
@@ -445,14 +473,21 @@ func (s *HostService) runBootstrapSession(ctx context.Context, sessionID string,
 		reportError("Bootstrap failed", err)
 		return
 	}
+	bootstrapDebugf("runBootstrapSession: after BootstrapStandardWithRunner session=%s", sessionID)
 	resolvedPaths = bootstrapResult.ResolvedPaths
 
+	bootstrapDebugf("runBootstrapSession: before reconnectPatchpilotWithRetry session=%s", sessionID)
 	patchpilotRunner, err := s.reconnectPatchpilotWithRetry(ctx, input.Hostname, normalizePort(input.SSHPort), keypair, reporter, patchpilotReconnectDelays)
 	if err != nil {
 		reportError("Reconnecting as patchpilot with key", err)
 		return
 	}
-	defer func() { _ = patchpilotRunner.Close() }()
+	bootstrapDebugf("runBootstrapSession: after reconnectPatchpilotWithRetry session=%s", sessionID)
+	defer func() {
+		bootstrapDebugf("runBootstrapSession: before patchpilotRunner.Close session=%s", sessionID)
+		_ = patchpilotRunner.Close()
+		bootstrapDebugf("runBootstrapSession: after patchpilotRunner.Close session=%s", sessionID)
+	}()
 	reporter.Report(BootstrapEvent{Step: "Reconnecting as patchpilot with key", Status: BootstrapStepSuccess, Message: "connected"})
 
 	verifyCommand, err := pkgmgr.VerifyCommand(input.Facts.PackageManager, bootstrapResult.ResolvedPaths)
@@ -460,20 +495,26 @@ func (s *HostService) runBootstrapSession(ctx context.Context, sessionID string,
 		reportError("Verifying NOPASSWD sudo", err)
 		return
 	}
+	bootstrapDebugf("runBootstrapSession: before Verifying NOPASSWD sudo session=%s", sessionID)
 	if err := runStep(ctx, patchpilotRunner, reporter, "Verifying NOPASSWD sudo", "Running package-manager sudo probe", verifyCommand, nil); err != nil {
 		reportError("Verifying NOPASSWD sudo", err)
 		return
 	}
+	bootstrapDebugf("runBootstrapSession: after Verifying NOPASSWD sudo session=%s", sessionID)
 
+	bootstrapDebugf("runBootstrapSession: before dryRunWithRunner session=%s", sessionID)
 	dryRun, err := s.dryRunWithRunner(ctx, patchpilotRunner, input.Facts.PackageManager, bootstrapResult.ResolvedPaths)
 	if err != nil {
 		reportError("Dry run", err)
 		return
 	}
+	bootstrapDebugf("runBootstrapSession: after dryRunWithRunner session=%s", sessionID)
 	reporter.Report(BootstrapEvent{Step: "Wiping your password from memory", Status: BootstrapStepSuccess, Message: "password buffer zeroed after this session completes"})
+	bootstrapDebugf("runBootstrapSession: after password wipe event report session=%s", sessionID)
 
 	summary := BootstrapSummary{Facts: input.Facts, DryRun: dryRun, ResolvedPaths: bootstrapResult.ResolvedPaths, SudoersEntry: bootstrapResult.SudoersEntry}
 	s.mu.Lock()
+	bootstrapDebugf("runBootstrapSession: before session state complete lock session=%s", sessionID)
 	state := s.sessions[sessionID]
 	state.Input = input
 	state.Facts = input.Facts
@@ -483,8 +524,11 @@ func (s *HostService) runBootstrapSession(ctx context.Context, sessionID string,
 	state.Complete = true
 	s.sessions[sessionID] = state
 	s.mu.Unlock()
+	bootstrapDebugf("runBootstrapSession: after session state complete unlock session=%s", sessionID)
 	completed = true
+	bootstrapDebugf("runBootstrapSession: before publish bootstrap.complete session=%s", sessionID)
 	_ = s.Streams.Publish(sessionID, "bootstrap.complete", summary)
+	bootstrapDebugf("runBootstrapSession: after publish bootstrap.complete session=%s", sessionID)
 }
 
 func (s *HostService) diagnosePrivilege(ctx context.Context, runner remotessh.Runner, facts HostFacts, password []byte, user string) *PermissionDiagnosis {

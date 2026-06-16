@@ -101,7 +101,7 @@ func RollbackBootstrap(ctx context.Context, runner remotessh.Runner, facts HostF
 	if err != nil {
 		commands = BootstrapCommands{RollbackSudoers: "rm -f /etc/sudoers.d/patchpilot", RollbackKey: "rm -f /home/patchpilot/.ssh/authorized_keys", RollbackUser: "userdel -r patchpilot >/dev/null 2>&1 || deluser --remove-home patchpilot >/dev/null 2>&1 || true"}
 	}
-	reporter.Report(BootstrapEvent{Step: "Rollback", Status: BootstrapStepRunning, Message: "Removing bootstrap artifacts"})
+	reportBootstrapEvent(reporter, BootstrapEvent{Step: "Rollback", Status: BootstrapStepRunning, Message: "Removing bootstrap artifacts"})
 	rollback := []string{commands.RollbackSudoers, commands.RollbackKey}
 	if !facts.PatchpilotUserExists {
 		rollback = append(rollback, commands.RollbackUser)
@@ -110,7 +110,7 @@ func RollbackBootstrap(ctx context.Context, runner remotessh.Runner, facts HostF
 		escalated, input := escalate(facts, command, password)
 		_, _ = runner.Run(ctx, escalated, input)
 	}
-	reporter.Report(BootstrapEvent{Step: "Rollback", Status: BootstrapStepSuccess, Message: "Best-effort rollback complete"})
+	reportBootstrapEvent(reporter, BootstrapEvent{Step: "Rollback", Status: BootstrapStepSuccess, Message: "Best-effort rollback complete"})
 }
 
 // BootstrapStandardWithRunner bootstraps the patchpilot user over an already-open privileged session.
@@ -148,7 +148,7 @@ func BootstrapStandardWithRunner(ctx context.Context, runner remotessh.Runner, o
 	}
 
 	validateCommand, validateInput := escalate(options.Facts, commands.ValidateSudoers, options.Password)
-	reporter.Report(BootstrapEvent{Step: "Validating sudoers with visudo -cf", Status: BootstrapStepRunning, Message: "Checking sudoers syntax before closing privileged session"})
+	reportBootstrapEvent(reporter, BootstrapEvent{Step: "Validating sudoers with visudo -cf", Status: BootstrapStepRunning, Message: "Checking sudoers syntax before closing privileged session"})
 	if result, err := runner.Run(ctx, validateCommand, validateInput); err != nil {
 		rollbackCommand, rollbackInput := escalate(options.Facts, commands.RollbackSudoers, options.Password)
 		_, rollbackErr := runner.Run(ctx, rollbackCommand, rollbackInput)
@@ -156,10 +156,10 @@ func BootstrapStandardWithRunner(ctx context.Context, runner remotessh.Runner, o
 		if rollbackErr != nil {
 			message = message + "; rollback failed: " + rollbackErr.Error()
 		}
-		reporter.Report(BootstrapEvent{Step: "Validating sudoers with visudo -cf", Status: BootstrapStepFailed, Message: message})
+		reportBootstrapEvent(reporter, BootstrapEvent{Step: "Validating sudoers with visudo -cf", Status: BootstrapStepFailed, Message: message})
 		return BootstrapResult{}, fmt.Errorf("validate sudoers and rollback invalid file: %w", err)
 	}
-	reporter.Report(BootstrapEvent{Step: "Validating sudoers with visudo -cf", Status: BootstrapStepSuccess, Message: "sudoers syntax is valid"})
+	reportBootstrapEvent(reporter, BootstrapEvent{Step: "Validating sudoers with visudo -cf", Status: BootstrapStepSuccess, Message: "sudoers syntax is valid"})
 
 	return BootstrapResult{ResolvedPaths: paths, SudoersEntry: mustSudoers(manager, paths)}, nil
 }
@@ -192,7 +192,7 @@ func resolveCommandPaths(ctx context.Context, runner remotessh.Runner, reporter 
 func resolveRequiredCommandPaths(ctx context.Context, runner remotessh.Runner, reporter BootstrapReporter, facts HostFacts, password []byte, required []string) (map[string]string, error) {
 	reporter = nonNilReporter(reporter)
 	for _, name := range required {
-		reporter.Report(BootstrapEvent{Step: commandPathStep(name), Status: BootstrapStepRunning, Message: "Resolving with command -v -p, which, and canonical paths"})
+		reportBootstrapEvent(reporter, BootstrapEvent{Step: commandPathStep(name), Status: BootstrapStepRunning, Message: "Resolving with command -v -p, which, and canonical paths"})
 	}
 
 	command, input := escalate(facts, commandPathResolutionScript(required), password)
@@ -206,26 +206,26 @@ func resolveRequiredCommandPaths(ctx context.Context, runner remotessh.Runner, r
 		message := strings.TrimSpace(result.Stderr + "\n" + result.Stdout)
 		if missing != "" {
 			message = fmt.Sprintf("command %s could not be resolved to an executable absolute path", missing)
-			reporter.Report(BootstrapEvent{Step: commandPathStep(missing), Status: BootstrapStepFailed, Message: message})
+			reportBootstrapEvent(reporter, BootstrapEvent{Step: commandPathStep(missing), Status: BootstrapStepFailed, Message: message})
 			return nil, fmt.Errorf("resolve command path %s: %s", missing, message)
 		}
 		if message == "" {
 			message = runErr.Error()
 		}
-		reporter.Report(BootstrapEvent{Step: "Resolving command paths", Status: BootstrapStepFailed, Message: message})
+		reportBootstrapEvent(reporter, BootstrapEvent{Step: "Resolving command paths", Status: BootstrapStepFailed, Message: message})
 		return nil, fmt.Errorf("resolve command paths: %w", runErr)
 	}
 	if parseErr != nil {
 		missing := firstMissingRequired(required, paths)
 		if missing != "" {
-			reporter.Report(BootstrapEvent{Step: commandPathStep(missing), Status: BootstrapStepFailed, Message: parseErr.Error()})
+			reportBootstrapEvent(reporter, BootstrapEvent{Step: commandPathStep(missing), Status: BootstrapStepFailed, Message: parseErr.Error()})
 		} else {
-			reporter.Report(BootstrapEvent{Step: "Resolving command paths", Status: BootstrapStepFailed, Message: parseErr.Error()})
+			reportBootstrapEvent(reporter, BootstrapEvent{Step: "Resolving command paths", Status: BootstrapStepFailed, Message: parseErr.Error()})
 		}
 		return nil, parseErr
 	}
 	for _, name := range required {
-		reporter.Report(BootstrapEvent{Step: commandPathStep(name), Status: BootstrapStepSuccess, Message: paths[name]})
+		reportBootstrapEvent(reporter, BootstrapEvent{Step: commandPathStep(name), Status: BootstrapStepSuccess, Message: paths[name]})
 	}
 	return paths, nil
 }
@@ -326,17 +326,17 @@ func commandPathStep(name string) string {
 }
 
 func runStep(ctx context.Context, runner remotessh.Runner, reporter BootstrapReporter, step string, message string, command string, input []byte) error {
-	reporter.Report(BootstrapEvent{Step: step, Status: BootstrapStepRunning, Message: message})
+	reportBootstrapEvent(reporter, BootstrapEvent{Step: step, Status: BootstrapStepRunning, Message: message})
 	result, err := runner.Run(ctx, command, input)
 	if err != nil {
 		failure := strings.TrimSpace(result.Stderr + "\n" + result.Stdout)
 		if failure == "" {
 			failure = err.Error()
 		}
-		reporter.Report(BootstrapEvent{Step: step, Status: BootstrapStepFailed, Message: failure})
+		reportBootstrapEvent(reporter, BootstrapEvent{Step: step, Status: BootstrapStepFailed, Message: failure})
 		return fmt.Errorf("%s: %w", step, err)
 	}
-	reporter.Report(BootstrapEvent{Step: step, Status: BootstrapStepSuccess, Message: strings.TrimSpace(result.Stdout)})
+	reportBootstrapEvent(reporter, BootstrapEvent{Step: step, Status: BootstrapStepSuccess, Message: strings.TrimSpace(result.Stdout)})
 	return nil
 }
 
@@ -375,6 +375,12 @@ func mustSudoers(manager pkgmgr.PackageManager, paths map[string]string) string 
 		return ""
 	}
 	return entry
+}
+
+func reportBootstrapEvent(reporter BootstrapReporter, event BootstrapEvent) {
+	bootstrapDebugf("bootstrap.go: before Report step=%q status=%q message=%q", event.Step, event.Status, event.Message)
+	reporter.Report(event)
+	bootstrapDebugf("bootstrap.go: after Report step=%q status=%q", event.Step, event.Status)
 }
 
 type discardReporter struct{}
