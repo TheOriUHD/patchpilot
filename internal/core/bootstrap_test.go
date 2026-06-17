@@ -180,6 +180,12 @@ func TestSuBootstrapBatchIsIdempotentAndInstallsSudoWhenMissing(t *testing.T) {
 		"systemctl": "/usr/bin/systemctl",
 		"reboot":    "/usr/sbin/reboot",
 		"shutdown":  "/usr/sbin/shutdown",
+		"id":        "/usr/bin/id",
+		"install":   "/usr/bin/install",
+		"chown":     "/usr/bin/chown",
+		"chmod":     "/usr/bin/chmod",
+		"useradd":   "/usr/sbin/useradd",
+		"visudo":    "/usr/sbin/visudo",
 	})
 	if err != nil {
 		t.Fatalf("GenerateBootstrapCommands() error: %v", err)
@@ -188,16 +194,30 @@ func TestSuBootstrapBatchIsIdempotentAndInstallsSudoWhenMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("suBootstrapBatch() error: %v", err)
 	}
+	if !strings.HasPrefix(batch, "export PATH=/usr/sbin:/usr/bin:/sbin:/bin:$PATH\n") {
+		t.Fatalf("batch must begin with PATH export:\n%s", batch)
+	}
 	for _, want := range []string{
 		"apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y sudo",
-		"id patchpilot >/dev/null 2>&1 || useradd",
-		"install -d -m 0700 -o patchpilot -g patchpilot /home/patchpilot/.ssh",
+		"/usr/bin/id patchpilot >/dev/null 2>&1 || /usr/sbin/useradd",
+		"/usr/bin/install -d -m 0700 -o patchpilot -g patchpilot /home/patchpilot/.ssh",
 		"> /home/patchpilot/.ssh/authorized_keys",
 		"cat > /etc/sudoers.d/patchpilot",
-		"visudo -cf /etc/sudoers.d/patchpilot",
+		"/usr/sbin/visudo -cf /etc/sudoers.d/patchpilot",
 	} {
 		if !strings.Contains(batch, want) {
 			t.Fatalf("batch missing %q:\n%s", want, batch)
+		}
+	}
+}
+
+func TestBootstrapAdminCommandsIncludesRequestedTools(t *testing.T) {
+	t.Parallel()
+
+	commands := bootstrapAdminCommands(pkgmgr.ManagerAPT)
+	for _, want := range []string{"useradd", "usermod", "groupadd", "visudo"} {
+		if !containsString(commands, want) {
+			t.Fatalf("bootstrapAdminCommands() = %#v, missing %q", commands, want)
 		}
 	}
 }
@@ -314,4 +334,13 @@ func (r *fakeRunner) indexContaining(needle string) int {
 		}
 	}
 	return -1
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

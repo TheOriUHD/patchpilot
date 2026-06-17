@@ -57,6 +57,7 @@ type BootstrapCommands struct {
 	CreateUser         string
 	CreateSSHDir       string
 	InstallPublicKey   string
+	PrepareSudoersDir  string
 	WriteSudoers       string
 	ValidateSudoers    string
 	RollbackSudoers    string
@@ -77,20 +78,31 @@ func GenerateBootstrapCommands(publicKey string, sourceIP string, manager pkgmgr
 	}
 
 	authorizedKey := hardenedAuthorizedKey(publicKey, sourceIP)
-	createUser := "id patchpilot >/dev/null 2>&1 || useradd --system --create-home --shell /bin/sh patchpilot"
+	idCommand := resolvedOrBare(resolvedPaths, "id")
+	useraddCommand := resolvedOrBare(resolvedPaths, "useradd")
+	adduserCommand := resolvedOrBare(resolvedPaths, "adduser")
+	installCommand := resolvedOrBare(resolvedPaths, "install")
+	chownCommand := resolvedOrBare(resolvedPaths, "chown")
+	chmodCommand := resolvedOrBare(resolvedPaths, "chmod")
+	visudoCommand := resolvedOrBare(resolvedPaths, "visudo")
+	rmCommand := resolvedOrBare(resolvedPaths, "rm")
+	userdelCommand := resolvedOrBare(resolvedPaths, "userdel")
+	deluserCommand := resolvedOrBare(resolvedPaths, "deluser")
+	createUser := idCommand + " patchpilot >/dev/null 2>&1 || " + useraddCommand + " --system --create-home --shell /bin/sh patchpilot"
 	if manager == pkgmgr.ManagerAPK {
-		createUser = "id patchpilot >/dev/null 2>&1 || adduser -D -h /home/patchpilot -s /bin/sh patchpilot"
+		createUser = idCommand + " patchpilot >/dev/null 2>&1 || " + adduserCommand + " -D -h /home/patchpilot -s /bin/sh patchpilot"
 	}
 
 	return BootstrapCommands{
 		CreateUser:         createUser,
-		CreateSSHDir:       "install -d -m 0700 -o patchpilot -g patchpilot /home/patchpilot/.ssh",
-		InstallPublicKey:   "printf %s " + shellQuote(authorizedKey) + " > /home/patchpilot/.ssh/authorized_keys && chown patchpilot:patchpilot /home/patchpilot/.ssh/authorized_keys && chmod 0600 /home/patchpilot/.ssh/authorized_keys",
-		WriteSudoers:       "cat > /etc/sudoers.d/patchpilot <<'PATCHPILOT_SUDOERS'\n" + sudoersEntry + "PATCHPILOT_SUDOERS\nchmod 0440 /etc/sudoers.d/patchpilot",
-		ValidateSudoers:    "visudo -cf /etc/sudoers.d/patchpilot",
-		RollbackSudoers:    "rm -f /etc/sudoers.d/patchpilot",
-		RollbackKey:        "rm -f /home/patchpilot/.ssh/authorized_keys",
-		RollbackUser:       "userdel -r patchpilot >/dev/null 2>&1 || deluser --remove-home patchpilot >/dev/null 2>&1 || true",
+		CreateSSHDir:       installCommand + " -d -m 0700 -o patchpilot -g patchpilot /home/patchpilot/.ssh",
+		InstallPublicKey:   "printf %s " + shellQuote(authorizedKey) + " > /home/patchpilot/.ssh/authorized_keys && " + chownCommand + " patchpilot:patchpilot /home/patchpilot/.ssh/authorized_keys && " + chmodCommand + " 0600 /home/patchpilot/.ssh/authorized_keys",
+		PrepareSudoersDir:  installCommand + " -d -m 0750 /etc/sudoers.d",
+		WriteSudoers:       "cat > /etc/sudoers.d/patchpilot <<'PATCHPILOT_SUDOERS'\n" + sudoersEntry + "PATCHPILOT_SUDOERS\n" + chmodCommand + " 0440 /etc/sudoers.d/patchpilot",
+		ValidateSudoers:    visudoCommand + " -cf /etc/sudoers.d/patchpilot",
+		RollbackSudoers:    rmCommand + " -f /etc/sudoers.d/patchpilot",
+		RollbackKey:        rmCommand + " -f /home/patchpilot/.ssh/authorized_keys",
+		RollbackUser:       userdelCommand + " -r patchpilot >/dev/null 2>&1 || " + deluserCommand + " --remove-home patchpilot >/dev/null 2>&1 || true",
 		VerifySudoNoPasswd: verify,
 	}, nil
 }
@@ -128,7 +140,7 @@ func BootstrapStandardWithRunner(ctx context.Context, runner remotessh.Runner, o
 		return BootstrapResult{}, err
 	}
 
-	paths, err := resolveCommandPaths(ctx, runner, reporter, options.Facts, manager, options.Password)
+	paths, err := resolveBootstrapCommandPaths(ctx, runner, reporter, options.Facts, manager, options.Password)
 	if err != nil {
 		return BootstrapResult{}, err
 	}
@@ -183,7 +195,7 @@ func bootstrapStandardWithSu(ctx context.Context, runner remotessh.Runner, optio
 	}
 	reportBootstrapEvent(reporter, BootstrapEvent{Step: "Privilege check", Status: BootstrapStepSuccess, Message: "su authentication accepted"})
 
-	paths, err := resolveCommandPathsWithEscalation(ctx, runner, reporter, escalation, manager)
+	paths, err := resolveBootstrapCommandPathsWithEscalation(ctx, runner, reporter, escalation, manager)
 	if err != nil {
 		return BootstrapResult{}, err
 	}
@@ -208,6 +220,7 @@ func bootstrapStandardWithSu(ctx context.Context, runner remotessh.Runner, optio
 
 func suBootstrapBatch(manager pkgmgr.PackageManager, commands BootstrapCommands, installSudo bool) (string, error) {
 	var builder strings.Builder
+	builder.WriteString("export PATH=/usr/sbin:/usr/bin:/sbin:/bin:$PATH\n")
 	builder.WriteString("set -eu\n")
 	builder.WriteString("patchpilot_step() { printf 'patchpilot bootstrap: %s\\n' \"$1\"; }\n")
 	if installSudo {
@@ -229,7 +242,8 @@ func suBootstrapBatch(manager pkgmgr.PackageManager, commands BootstrapCommands,
 	builder.WriteString(commands.InstallPublicKey)
 	builder.WriteByte('\n')
 	builder.WriteString("patchpilot_step 'prepare sudoers directory'\n")
-	builder.WriteString("install -d -m 0750 /etc/sudoers.d\n")
+	builder.WriteString(commands.PrepareSudoersDir)
+	builder.WriteByte('\n')
 	builder.WriteString("patchpilot_step 'write sudoers'\n")
 	builder.WriteString(commands.WriteSudoers)
 	builder.WriteByte('\n')
@@ -296,16 +310,69 @@ func resolveCommandPaths(ctx context.Context, runner remotessh.Runner, reporter 
 	return resolveRequiredCommandPathsWithEscalation(ctx, runner, reporter, escalationInput{Facts: facts, Password: password}, required)
 }
 
+func resolveBootstrapCommandPaths(ctx context.Context, runner remotessh.Runner, reporter BootstrapReporter, facts HostFacts, manager pkgmgr.PackageManager, password []byte) (map[string]string, error) {
+	return resolveBootstrapCommandPathsWithEscalation(ctx, runner, reporter, escalationInput{Facts: facts, Password: password}, manager)
+}
+
 func resolveRequiredCommandPaths(ctx context.Context, runner remotessh.Runner, reporter BootstrapReporter, facts HostFacts, password []byte, required []string) (map[string]string, error) {
 	return resolveRequiredCommandPathsWithEscalation(ctx, runner, reporter, escalationInput{Facts: facts, Password: password}, required)
 }
 
-func resolveCommandPathsWithEscalation(ctx context.Context, runner remotessh.Runner, reporter BootstrapReporter, escalation escalationInput, manager pkgmgr.PackageManager) (map[string]string, error) {
+func resolveBootstrapCommandPathsWithEscalation(ctx context.Context, runner remotessh.Runner, reporter BootstrapReporter, escalation escalationInput, manager pkgmgr.PackageManager) (map[string]string, error) {
 	required, err := pkgmgr.RequiredCommands(manager)
 	if err != nil {
 		return nil, err
 	}
-	return resolveRequiredCommandPathsWithEscalation(ctx, runner, reporter, escalation, required)
+	paths, err := resolveRequiredCommandPathsWithEscalation(ctx, runner, reporter, escalation, required)
+	if err != nil {
+		return nil, err
+	}
+	optional, err := resolveOptionalCommandPathsWithEscalation(ctx, runner, escalation, bootstrapAdminCommands(manager))
+	if err != nil {
+		return nil, err
+	}
+	for name, path := range optional {
+		paths[name] = path
+	}
+	return paths, nil
+}
+
+func bootstrapAdminCommands(manager pkgmgr.PackageManager) []string {
+	commands := []string{"id", "install", "chown", "chmod", "rm", "useradd", "usermod", "groupadd", "userdel", "visudo"}
+	if manager == pkgmgr.ManagerAPK {
+		commands = append(commands, "adduser", "deluser")
+	} else {
+		commands = append(commands, "deluser")
+	}
+	return commands
+}
+
+func dedupeCommands(commands []string) []string {
+	seen := make(map[string]struct{}, len(commands))
+	deduped := make([]string, 0, len(commands))
+	for _, command := range commands {
+		if _, ok := seen[command]; ok {
+			continue
+		}
+		seen[command] = struct{}{}
+		deduped = append(deduped, command)
+	}
+	return deduped
+}
+
+func resolveOptionalCommandPathsWithEscalation(ctx context.Context, runner remotessh.Runner, escalation escalationInput, optional []string) (map[string]string, error) {
+	if len(optional) == 0 {
+		return map[string]string{}, nil
+	}
+	result, _, err := runEscalated(ctx, runner, escalation, commandPathOptionalResolutionScript(dedupeCommands(optional)))
+	if err != nil {
+		return nil, fmt.Errorf("resolve optional command paths: %w", err)
+	}
+	paths, err := parseOptionalResolvedCommandPaths(result.Stdout)
+	if err != nil {
+		return nil, err
+	}
+	return paths, nil
 }
 
 func resolveRequiredCommandPathsWithEscalation(ctx context.Context, runner remotessh.Runner, reporter BootstrapReporter, escalation escalationInput, required []string) (map[string]string, error) {
@@ -389,6 +456,43 @@ status=0
 	return builder.String()
 }
 
+func commandPathOptionalResolutionScript(optional []string) string {
+	var builder strings.Builder
+	builder.WriteString(`resolve_patchpilot_command() {
+	name=$1
+	resolved=
+	candidate=$(command -v -p "$name" 2>/dev/null || true)
+	case "$candidate" in
+		/*) resolved=$candidate ;;
+	esac
+	if [ -z "$resolved" ]; then
+		candidate=$(which "$name" 2>/dev/null || true)
+		case "$candidate" in
+			/*) resolved=$candidate ;;
+		esac
+	fi
+	if [ -z "$resolved" ]; then
+		for prefix in /usr/bin /bin /usr/sbin /sbin; do
+			candidate=$prefix/$name
+			if test -x "$candidate"; then
+				resolved=$candidate
+				break
+			fi
+		done
+	fi
+	if [ -n "$resolved" ]; then
+		printf '%s\t%s\n' "$name" "$resolved"
+	fi
+}
+`)
+	for _, name := range optional {
+		builder.WriteString("resolve_patchpilot_command ")
+		builder.WriteString(shellQuote(name))
+		builder.WriteByte('\n')
+	}
+	return builder.String()
+}
+
 func parseResolvedCommandPaths(output string, required []string) (map[string]string, error) {
 	paths := make(map[string]string, len(required))
 	requiredSet := make(map[string]struct{}, len(required))
@@ -418,6 +522,34 @@ func parseResolvedCommandPaths(output string, required []string) (map[string]str
 		return paths, fmt.Errorf("command %s could not be resolved to an executable absolute path", missing)
 	}
 	return paths, nil
+}
+
+func parseOptionalResolvedCommandPaths(output string) (map[string]string, error) {
+	paths := make(map[string]string)
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		name, path, ok := strings.Cut(line, "\t")
+		if !ok {
+			return paths, fmt.Errorf("parse optional resolved command path line %q", line)
+		}
+		name = strings.TrimSpace(name)
+		path = strings.TrimSpace(path)
+		if !strings.HasPrefix(path, "/") {
+			return paths, fmt.Errorf("command %s resolved to non-absolute path %q", name, path)
+		}
+		paths[name] = path
+	}
+	return paths, nil
+}
+
+func resolvedOrBare(paths map[string]string, name string) string {
+	if path := strings.TrimSpace(paths[name]); strings.HasPrefix(path, "/") {
+		return path
+	}
+	return name
 }
 
 func missingCommandFromResolverOutput(output string) string {
