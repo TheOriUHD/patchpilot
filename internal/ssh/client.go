@@ -14,6 +14,8 @@ import (
 	xssh "golang.org/x/crypto/ssh"
 )
 
+const ptyStdinDelay = 400 * time.Millisecond
+
 // CommandResult is the captured result of a remote command.
 type CommandResult struct {
 	Stdout   string
@@ -90,6 +92,9 @@ func (c *Client) RunWithOptions(ctx context.Context, command string, stdin []byt
 		if err := session.RequestPty("xterm", 80, 24, xssh.TerminalModes{xssh.ECHO: 0}); err != nil {
 			return CommandResult{}, fmt.Errorf("request ssh pty: %w", err)
 		}
+		if len(stdin) > 0 {
+			return c.runPTYWithStdin(ctx, session, command, stdin, &stdout, &stderr)
+		}
 	}
 	if len(stdin) > 0 {
 		session.Stdin = bytes.NewReader(stdin)
@@ -111,6 +116,54 @@ func (c *Client) RunWithOptions(ctx context.Context, command string, stdin []byt
 			return result, fmt.Errorf("run remote command: %w", err)
 		}
 		return result, nil
+	}
+}
+
+func (c *Client) runPTYWithStdin(ctx context.Context, session *xssh.Session, command string, stdin []byte, stdout *bytes.Buffer, stderr *bytes.Buffer) (CommandResult, error) {
+	stdinPipe, err := session.StdinPipe()
+	if err != nil {
+		return CommandResult{}, fmt.Errorf("open stdin pipe: %w", err)
+	}
+	if err := session.Start(command); err != nil {
+		_ = stdinPipe.Close()
+		return CommandResult{Stdout: stdout.String(), Stderr: stderr.String(), ExitCode: exitCode(err)}, fmt.Errorf("start remote command: %w", err)
+	}
+	go delayedWritePTYStdin(stdinPipe, stdin, ptyStdinDelay)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- session.Wait()
+	}()
+
+	select {
+	case <-ctx.Done():
+		_ = session.Signal(xssh.SIGKILL)
+		_ = session.Close()
+		_ = stdinPipe.Close()
+		return CommandResult{Stdout: stdout.String(), Stderr: stderr.String(), ExitCode: -1}, ctx.Err()
+	case err := <-done:
+		result := CommandResult{Stdout: stdout.String(), Stderr: stderr.String(), ExitCode: exitCode(err)}
+		if err != nil {
+			return result, fmt.Errorf("run remote command: %w", err)
+		}
+		return result, nil
+	}
+}
+
+func delayedWritePTYStdin(writer io.WriteCloser, stdin []byte, delay time.Duration) {
+	defer func() { _ = writer.Close() }()
+	if delay > 0 {
+		time.Sleep(delay)
+	}
+	payload := append([]byte{}, stdin...)
+	payload = append(payload, '\n')
+	defer zeroBytes(payload)
+	_, _ = writer.Write(payload)
+}
+
+func zeroBytes(value []byte) {
+	for index := range value {
+		value[index] = 0
 	}
 }
 

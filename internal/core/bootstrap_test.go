@@ -158,8 +158,8 @@ func TestBuildEscalatedCommandSuUsesPTYAndStdin(t *testing.T) {
 	if !escalated.Options.PTY {
 		t.Fatal("su escalation must request a PTY")
 	}
-	if got := string(escalated.Stdin); got != "root-secret\n" {
-		t.Fatalf("stdin = %q, want root password plus newline", got)
+	if got := string(escalated.Stdin); got != "root-secret" {
+		t.Fatalf("stdin = %q, want raw root password for PTY writer", got)
 	}
 	if strings.Contains(escalated.Command, "root-secret") {
 		t.Fatalf("root password leaked into command: %q", escalated.Command)
@@ -231,8 +231,17 @@ func TestBootstrapStandardWithRunnerUsesSuBatch(t *testing.T) {
 	if strings.Contains(strings.Join(runner.commands, "\n"), "root-secret") || strings.Contains(strings.Join(runner.commands, "\n"), "user-secret") {
 		t.Fatalf("secret leaked into commands: %#v", runner.commands)
 	}
-	if got := string(runner.stdin[batchIndex]); got != "root-secret\n" {
-		t.Fatalf("batch stdin = %q, want root password plus newline", got)
+	if got := string(runner.stdin[batchIndex]); got != "root-secret" {
+		t.Fatalf("batch stdin = %q, want raw root password for PTY writer", got)
+	}
+}
+
+func TestSuPromptOnlyFailureMessage(t *testing.T) {
+	t.Parallel()
+
+	message := suFailureMessage(remotessh.CommandResult{Stderr: "Password:"}, errors.New("context deadline exceeded"))
+	if message != "su did not accept the root password (prompt not answered or password rejected)" {
+		t.Fatalf("message = %q", message)
 	}
 }
 

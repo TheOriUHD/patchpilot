@@ -259,7 +259,7 @@ func installSudoCommand(manager pkgmgr.PackageManager) (string, error) {
 
 func suFailureMessage(result remotessh.CommandResult, err error) string {
 	if suAuthenticationFailed(result, err) {
-		return "could not escalate with su: root password was rejected"
+		return "su did not accept the root password (prompt not answered or password rejected)"
 	}
 	message := strings.TrimSpace(result.Stderr + "\n" + result.Stdout)
 	if message != "" {
@@ -467,7 +467,7 @@ func runEscalatedStep(ctx context.Context, runner remotessh.Runner, reporter Boo
 			failure = err.Error()
 		}
 		if escalated.Mode == escalationSuRoot && suAuthenticationFailed(result, err) {
-			failure = "could not escalate with su: root password was rejected"
+			failure = "su did not accept the root password (prompt not answered or password rejected)"
 		}
 		reportBootstrapEvent(reporter, BootstrapEvent{Step: step, Status: BootstrapStepFailed, Message: failure})
 		return fmt.Errorf("%s: %w", step, err)

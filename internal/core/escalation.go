@@ -46,7 +46,6 @@ func buildEscalatedCommand(input escalationInput, command string) (escalatedComm
 		return escalatedCommand{Command: "sudo -S -p '' sh -c " + shellQuote(command), Stdin: stdin, Mode: mode}, nil
 	case escalationSuRoot:
 		stdin := append([]byte{}, input.RootPassword...)
-		stdin = append(stdin, '\n')
 		return escalatedCommand{Command: "su -c " + shellQuote(command), Stdin: stdin, Options: remotessh.RunOptions{PTY: true}, Mode: mode}, nil
 	default:
 		return escalatedCommand{}, fmt.Errorf("unsupported escalation mode %q", mode)
@@ -85,6 +84,7 @@ func runEscalated(ctx context.Context, runner remotessh.Runner, escalation escal
 }
 
 func runRunnerCommand(ctx context.Context, runner remotessh.Runner, command escalatedCommand) (remotessh.CommandResult, error) {
+	defer ZeroBytes(command.Stdin)
 	if command.Options.PTY {
 		if optionsRunner, ok := runner.(interface {
 			RunWithOptions(context.Context, string, []byte, remotessh.RunOptions) (remotessh.CommandResult, error)
@@ -100,5 +100,6 @@ func suAuthenticationFailed(result remotessh.CommandResult, err error) bool {
 		return false
 	}
 	output := strings.ToLower(result.Stdout + "\n" + result.Stderr + "\n" + err.Error())
-	return strings.Contains(output, "authentication failure") || strings.Contains(output, "authentication failed") || strings.Contains(output, "incorrect password") || strings.Contains(output, "permission denied")
+	trimmedOutput := strings.TrimSpace(strings.ToLower(result.Stdout + "\n" + result.Stderr))
+	return strings.Contains(output, "authentication failure") || strings.Contains(output, "authentication failed") || strings.Contains(output, "incorrect password") || strings.Contains(output, "permission denied") || trimmedOutput == "password:"
 }
