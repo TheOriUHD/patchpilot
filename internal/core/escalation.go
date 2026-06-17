@@ -89,10 +89,32 @@ func runRunnerCommand(ctx context.Context, runner remotessh.Runner, command esca
 		if optionsRunner, ok := runner.(interface {
 			RunWithOptions(context.Context, string, []byte, remotessh.RunOptions) (remotessh.CommandResult, error)
 		}); ok {
-			return optionsRunner.RunWithOptions(ctx, command.Command, command.Stdin, command.Options)
+			result, err := optionsRunner.RunWithOptions(ctx, command.Command, command.Stdin, command.Options)
+			if command.Mode == escalationSuRoot {
+				result.Stdout = stripLeadingSuPasswordPrompts(result.Stdout)
+			}
+			return result, err
 		}
 	}
 	return runner.Run(ctx, command.Command, command.Stdin)
+}
+
+func stripLeadingSuPasswordPrompts(output string) string {
+	for {
+		line, rest, hadNewline := strings.Cut(output, "\n")
+		if !isSuPasswordPromptLine(line) {
+			return output
+		}
+		if !hadNewline {
+			return ""
+		}
+		output = rest
+	}
+}
+
+func isSuPasswordPromptLine(line string) bool {
+	trimmed := strings.TrimSpace(strings.TrimRight(line, "\r"))
+	return trimmed == "Password:"
 }
 
 func suAuthenticationFailed(result remotessh.CommandResult, err error) bool {

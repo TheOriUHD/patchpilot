@@ -236,6 +236,30 @@ func TestBootstrapStandardWithRunnerUsesSuBatch(t *testing.T) {
 	}
 }
 
+func TestResolveCommandPathsStripsLeadingSuPasswordPrompt(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeRunner{responses: map[string]fakeResponse{
+		"resolve_patchpilot_command": {result: remotessh.CommandResult{Stdout: "Password:\r\napt-get\t/usr/bin/apt-get\n"}},
+	}}
+	paths, err := resolveRequiredCommandPathsWithEscalation(context.Background(), runner, nil, escalationInput{Facts: HostFacts{CurrentUID: "1000", SuPresent: true}, RootPassword: []byte("root-secret")}, []string{"apt-get"})
+	if err != nil {
+		t.Fatalf("resolveRequiredCommandPathsWithEscalation() error: %v", err)
+	}
+	if paths["apt-get"] != "/usr/bin/apt-get" {
+		t.Fatalf("paths[apt-get] = %q", paths["apt-get"])
+	}
+}
+
+func TestStripLeadingSuPasswordPromptsLeavesNormalOutput(t *testing.T) {
+	t.Parallel()
+
+	output := "apt-get\t/usr/bin/apt-get\nPassword: appears later\n"
+	if got := stripLeadingSuPasswordPrompts(output); got != output {
+		t.Fatalf("stripLeadingSuPasswordPrompts() = %q, want unchanged %q", got, output)
+	}
+}
+
 func TestSuPromptOnlyFailureMessage(t *testing.T) {
 	t.Parallel()
 
