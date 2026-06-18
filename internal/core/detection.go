@@ -24,7 +24,9 @@ const StandardDetectionProbe = `{
      echo "---TRUENAS---";  test -f /etc/version && grep -qi truenas /etc/version && echo yes || echo no
      echo "---SUDO---";     command -v sudo >/dev/null && echo present || echo missing
      echo "---SUDO_NPW---"; sudo -n true 2>&1 >/dev/null && echo yes || echo no
-		 echo "---SU---";       command -v su >/dev/null && echo present || echo missing
+	echo "---SUDOERS_FILE---"; test -f /etc/sudoers && echo present || echo missing
+	echo "---SUDOERS_DIR---";  test -d /etc/sudoers.d && echo present || echo missing
+	echo "---SU---";       command -v su >/dev/null && echo present || echo missing
      echo "---CURRENT_UID---"; id -u
      echo "---UPMGR_USER---"; id patchpilot 2>/dev/null && echo exists || echo missing
    } 2>&1`
@@ -43,6 +45,8 @@ type HostFacts struct {
 	IsTrueNAS            bool                    `json:"is_truenas"`
 	SudoPresent          bool                    `json:"sudo_present"`
 	SudoNoPassword       bool                    `json:"sudo_no_password"`
+	SudoersFilePresent   bool                    `json:"sudoers_file_present"`
+	SudoersDirPresent    bool                    `json:"sudoers_dir_present"`
 	SuPresent            bool                    `json:"su_present"`
 	CurrentUID           string                  `json:"current_uid"`
 	PatchpilotUserExists bool                    `json:"patchpilot_user_exists"`
@@ -77,6 +81,8 @@ func ParseHostFacts(output string) (HostFacts, error) {
 	facts.IsTrueNAS = parseYesNo(sections["TRUENAS"])
 	facts.SudoPresent = strings.Contains(strings.ToLower(sections["SUDO"]), "present")
 	facts.SudoNoPassword = parseYesNo(sections["SUDO_NPW"])
+	facts.SudoersFilePresent = strings.Contains(strings.ToLower(sections["SUDOERS_FILE"]), "present")
+	facts.SudoersDirPresent = strings.Contains(strings.ToLower(sections["SUDOERS_DIR"]), "present")
 	facts.SuPresent = strings.Contains(strings.ToLower(sections["SU"]), "present")
 	facts.CurrentUID = firstNonEmptyLine(sections["CURRENT_UID"])
 	facts.PatchpilotUserExists = strings.Contains(strings.ToLower(sections["UPMGR_USER"]), "exists")

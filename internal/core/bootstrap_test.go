@@ -288,6 +288,34 @@ func TestBootstrapStandardWithRunnerUsesSuWhenSudoPresentButDenied(t *testing.T)
 	}
 }
 
+func TestBootstrapDirectRootInstallsSudoBeforeWritingSudoers(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeRunner{responses: map[string]fakeResponse{
+		"resolve_patchpilot_command": {result: remotessh.CommandResult{Stdout: aptResolvedPathsOutput() + "id\t/usr/bin/id\ninstall\t/usr/bin/install\nchown\t/usr/bin/chown\nchmod\t/usr/bin/chmod\nuseradd\t/usr/sbin/useradd\nvisudo\t/usr/sbin/visudo\nrm\t/usr/bin/rm\nuserdel\t/usr/sbin/userdel\n"}},
+	}}
+	_, err := BootstrapStandardWithRunner(context.Background(), runner, BootstrapOptions{
+		Facts:     HostFacts{CurrentUID: "0", PackageManager: pkgmgr.ManagerAPT, SudoPresent: false},
+		Manager:   pkgmgr.ManagerAPT,
+		PublicKey: "ssh-ed25519 AAAA patchpilot",
+	}, nil)
+	if err != nil {
+		t.Fatalf("BootstrapStandardWithRunner() error: %v", err)
+	}
+	installSudoIndex := runner.indexContaining("apt-get install -y sudo")
+	prepareIndex := runner.indexContaining("/usr/bin/install -d -m 0750 /etc/sudoers.d")
+	writeIndex := runner.indexContaining("cat > /etc/sudoers.d/patchpilot")
+	verifyIndex := runner.indexContaining("/usr/sbin/visudo -cf /etc/sudoers.d/patchpilot")
+	for name, index := range map[string]int{"install sudo": installSudoIndex, "prepare sudoers dir": prepareIndex, "write sudoers": writeIndex, "visudo": verifyIndex} {
+		if index == -1 {
+			t.Fatalf("commands = %#v; missing %s", runner.commands, name)
+		}
+	}
+	if installSudoIndex >= prepareIndex || prepareIndex >= writeIndex || writeIndex >= verifyIndex {
+		t.Fatalf("unexpected order install=%d prepare=%d write=%d verify=%d commands=%#v", installSudoIndex, prepareIndex, writeIndex, verifyIndex, runner.commands)
+	}
+}
+
 func TestResolveCommandPathsStripsLeadingSuPasswordPrompt(t *testing.T) {
 	t.Parallel()
 

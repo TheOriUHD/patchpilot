@@ -139,6 +139,14 @@ func BootstrapStandardWithRunner(ctx context.Context, runner remotessh.Runner, o
 	if err := runEscalatedStep(ctx, runner, reporter, options.Facts, options.Password, "Privilege check", "Verifying sudo/root access", "true"); err != nil {
 		return BootstrapResult{}, err
 	}
+	if options.Facts.CurrentUID == "0" && !options.Facts.SudoPresent {
+		if err := installSudoDirectRoot(ctx, runner, reporter, manager); err != nil {
+			return BootstrapResult{}, err
+		}
+		options.Facts.SudoPresent = true
+		options.Facts.SudoersFilePresent = true
+		options.Facts.SudoersDirPresent = true
+	}
 
 	paths, err := resolveBootstrapCommandPaths(ctx, runner, reporter, options.Facts, manager, options.Password)
 	if err != nil {
@@ -156,6 +164,9 @@ func BootstrapStandardWithRunner(ctx context.Context, runner remotessh.Runner, o
 		return BootstrapResult{}, err
 	}
 	if err := runEscalatedStep(ctx, runner, reporter, options.Facts, options.Password, "Installing orchestrator public key", "Writing authorized_keys", commands.InstallPublicKey); err != nil {
+		return BootstrapResult{}, err
+	}
+	if err := runEscalatedStep(ctx, runner, reporter, options.Facts, options.Password, "Preparing /etc/sudoers.d", "Ensuring sudoers drop-in directory exists", commands.PrepareSudoersDir); err != nil {
 		return BootstrapResult{}, err
 	}
 	if err := runEscalatedStep(ctx, runner, reporter, options.Facts, options.Password, "Writing /etc/sudoers.d/patchpilot", "Writing sudoers policy", commands.WriteSudoers); err != nil {
@@ -182,6 +193,14 @@ func shouldUseSuBootstrap(options BootstrapOptions) bool {
 		return false
 	}
 	return !options.Facts.SudoPresent || len(options.RootPassword) > 0
+}
+
+func installSudoDirectRoot(ctx context.Context, runner remotessh.Runner, reporter BootstrapReporter, manager pkgmgr.PackageManager) error {
+	install, err := installSudoCommand(manager)
+	if err != nil {
+		return err
+	}
+	return runStep(ctx, runner, reporter, "Installing sudo", "Installing sudo package for patchpilot privilege policy", install, nil)
 }
 
 func bootstrapStandardWithSu(ctx context.Context, runner remotessh.Runner, options BootstrapOptions, manager pkgmgr.PackageManager, reporter BootstrapReporter) (BootstrapResult, error) {
