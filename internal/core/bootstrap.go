@@ -120,7 +120,7 @@ func RollbackBootstrap(ctx context.Context, runner remotessh.Runner, facts HostF
 		rollback = append(rollback, commands.RollbackUser)
 	}
 	for _, command := range rollback {
-		_, _, _ = runEscalated(ctx, runner, escalationInput{Facts: facts, Password: password, RootPassword: rootPassword}, command)
+		_, _, _ = runEscalated(ctx, runner, escalationInput{Facts: facts, Password: password, RootPassword: rootPassword, ForceSu: shouldForceSu(facts, rootPassword)}, command)
 	}
 	reportBootstrapEvent(reporter, BootstrapEvent{Step: "Rollback", Status: BootstrapStepSuccess, Message: "Best-effort rollback complete"})
 }
@@ -186,7 +186,7 @@ func shouldUseSuBootstrap(options BootstrapOptions) bool {
 
 func bootstrapStandardWithSu(ctx context.Context, runner remotessh.Runner, options BootstrapOptions, manager pkgmgr.PackageManager, reporter BootstrapReporter) (BootstrapResult, error) {
 	reporter = nonNilReporter(reporter)
-	escalation := escalationInput{Facts: options.Facts, Password: options.Password, RootPassword: options.RootPassword}
+	escalation := escalationInput{Facts: options.Facts, Password: options.Password, RootPassword: options.RootPassword, ForceSu: true}
 	reportBootstrapEvent(reporter, BootstrapEvent{Step: "Privilege check", Status: BootstrapStepRunning, Message: "Using su through the existing SSH session"})
 	if result, _, err := runEscalated(ctx, runner, escalation, "true"); err != nil {
 		message := suFailureMessage(result, err)
@@ -269,6 +269,10 @@ func installSudoCommand(manager pkgmgr.PackageManager) (string, error) {
 	default:
 		return "", fmt.Errorf("installing sudo is not supported for package manager %q; use pre-install mode", manager)
 	}
+}
+
+func shouldForceSu(facts HostFacts, rootPassword []byte) bool {
+	return facts.CurrentUID != "0" && !facts.SudoNoPassword && facts.SuPresent && len(rootPassword) > 0
 }
 
 func suFailureMessage(result remotessh.CommandResult, err error) string {

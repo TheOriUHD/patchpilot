@@ -256,6 +256,38 @@ func TestBootstrapStandardWithRunnerUsesSuBatch(t *testing.T) {
 	}
 }
 
+func TestBootstrapStandardWithRunnerUsesSuWhenSudoPresentButDenied(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeRunner{responses: map[string]fakeResponse{
+		"sudo -S":                    {result: remotessh.CommandResult{Stderr: "database is not in the sudoers file."}, err: errors.New("exit status 1")},
+		"resolve_patchpilot_command": {result: remotessh.CommandResult{Stdout: aptResolvedPathsOutput()}},
+	}}
+	_, err := BootstrapStandardWithRunner(context.Background(), runner, BootstrapOptions{
+		Facts:        HostFacts{CurrentUID: "1000", PackageManager: pkgmgr.ManagerAPT, SudoPresent: true, SuPresent: true},
+		Manager:      pkgmgr.ManagerAPT,
+		Password:     []byte("user-secret"),
+		RootPassword: []byte("root-secret"),
+		PublicKey:    "ssh-ed25519 AAAA patchpilot",
+	}, nil)
+	if err != nil {
+		t.Fatalf("BootstrapStandardWithRunner() error: %v", err)
+	}
+	if runner.indexContaining("sudo -S") != -1 {
+		t.Fatalf("commands = %#v; sudo-denied su path must not try current-user sudo", runner.commands)
+	}
+	batchIndex := runner.indexContaining("prepare ssh directory")
+	if batchIndex == -1 {
+		t.Fatalf("commands = %#v; want su bootstrap batch", runner.commands)
+	}
+	if strings.Contains(runner.commands[batchIndex], "apt-get install -y sudo") {
+		t.Fatalf("batch should not reinstall sudo when SudoPresent is true: %q", runner.commands[batchIndex])
+	}
+	if !runner.options[batchIndex].PTY {
+		t.Fatal("su bootstrap batch did not request PTY")
+	}
+}
+
 func TestResolveCommandPathsStripsLeadingSuPasswordPrompt(t *testing.T) {
 	t.Parallel()
 

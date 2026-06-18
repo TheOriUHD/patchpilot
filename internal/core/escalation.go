@@ -21,6 +21,7 @@ type escalationInput struct {
 	Facts        HostFacts
 	Password     []byte
 	RootPassword []byte
+	ForceSu      bool
 }
 
 type escalatedCommand struct {
@@ -58,6 +59,12 @@ func chooseEscalationMode(input escalationInput) (escalationMode, error) {
 	}
 	if input.Facts.SudoNoPassword {
 		return escalationSudoNoPasswd, nil
+	}
+	if input.ForceSu {
+		if input.Facts.SuPresent && len(input.RootPassword) > 0 {
+			return escalationSuRoot, nil
+		}
+		return "", fmt.Errorf("su escalation was requested but su or the root password is unavailable")
 	}
 	if input.Facts.SudoPresent && len(input.Password) > 0 {
 		return escalationSudoPassword, nil
