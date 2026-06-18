@@ -25,6 +25,7 @@ type Host struct {
 	SSHUser         string     `json:"ssh_user"`
 	Type            HostType   `json:"host_type"`
 	PackageManager  string     `json:"package_manager"`
+	APIUsername     string     `json:"api_username,omitempty"`
 	OSPretty        string     `json:"os_pretty"`
 	Arch            string     `json:"arch"`
 	IsProxmoxHost   bool       `json:"is_proxmox_host"`
@@ -46,6 +47,7 @@ type HostCreate struct {
 	SSHUser            string   `json:"ssh_user"`
 	Type               HostType `json:"host_type"`
 	PackageManager     string   `json:"package_manager"`
+	APIUsername        string   `json:"api_username"`
 	OSPretty           string   `json:"os_pretty"`
 	Arch               string   `json:"arch"`
 	IsProxmoxHost      bool     `json:"is_proxmox_host"`

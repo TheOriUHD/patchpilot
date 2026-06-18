@@ -22,7 +22,7 @@ func NewHostRepository(db *DB) *HostRepository {
 // List returns all hosts ordered by name.
 func (r *HostRepository) List(ctx context.Context) ([]core.Host, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		 SELECT id, name, hostname, ssh_port, ssh_user, host_type, COALESCE(package_manager, ''),
+		 SELECT id, name, hostname, ssh_port, ssh_user, host_type, COALESCE(package_manager, ''), COALESCE(api_username, ''),
 			 COALESCE(os_pretty, ''), COALESCE(arch, ''), is_proxmox_host, is_self, enabled,
 			 auto_reboot, auto_reboot_countdown_seconds, COALESCE(notes, ''), last_seen_at, created_at, updated_at
         FROM hosts
@@ -50,7 +50,7 @@ func (r *HostRepository) List(ctx context.Context) ([]core.Host, error) {
 // Get returns one host by id.
 func (r *HostRepository) Get(ctx context.Context, id int64) (core.Host, error) {
 	row := r.db.QueryRowContext(ctx, `
-		 SELECT id, name, hostname, ssh_port, ssh_user, host_type, COALESCE(package_manager, ''),
+		 SELECT id, name, hostname, ssh_port, ssh_user, host_type, COALESCE(package_manager, ''), COALESCE(api_username, ''),
 			 COALESCE(os_pretty, ''), COALESCE(arch, ''), is_proxmox_host, is_self, enabled,
 			 auto_reboot, auto_reboot_countdown_seconds, COALESCE(notes, ''), last_seen_at, created_at, updated_at
         FROM hosts
@@ -70,9 +70,9 @@ func (r *HostRepository) Create(ctx context.Context, input core.HostCreate) (cor
 		port = 22
 	}
 	result, err := r.db.ExecContext(ctx, `
-		INSERT INTO hosts (name, hostname, ssh_port, ssh_user, host_type, package_manager, os_pretty, arch, is_proxmox_host, is_self, api_token, api_token_nonce, enabled, auto_reboot, auto_reboot_countdown_seconds, notes, last_seen_at)
-		VALUES (?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, ?, CURRENT_TIMESTAMP)
-	`, input.Name, input.Hostname, port, input.SSHUser, input.Type, input.PackageManager, input.OSPretty, input.Arch, boolInt(input.IsProxmoxHost), boolInt(input.IsSelf), input.APITokenCiphertext, input.APITokenNonce, boolInt(input.Enabled), boolInt(input.AutoReboot), normalizeRebootDelay(input.AutoRebootDelay), input.Notes)
+		INSERT INTO hosts (name, hostname, ssh_port, ssh_user, host_type, package_manager, api_username, os_pretty, arch, is_proxmox_host, is_self, api_token, api_token_nonce, enabled, auto_reboot, auto_reboot_countdown_seconds, notes, last_seen_at)
+		VALUES (?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, ?, CURRENT_TIMESTAMP)
+	`, input.Name, input.Hostname, port, input.SSHUser, input.Type, input.PackageManager, input.APIUsername, input.OSPretty, input.Arch, boolInt(input.IsProxmoxHost), boolInt(input.IsSelf), input.APITokenCiphertext, input.APITokenNonce, boolInt(input.Enabled), boolInt(input.AutoReboot), normalizeRebootDelay(input.AutoRebootDelay), input.Notes)
 	if err != nil {
 		return core.Host{}, fmt.Errorf("create host: %w", err)
 	}
@@ -93,6 +93,14 @@ func (r *HostRepository) GetAPIToken(ctx context.Context, id int64) (core.Encryp
 		return core.EncryptedSecret{}, fmt.Errorf("host %d has no stored API token", id)
 	}
 	return token, nil
+}
+
+// SetAPICredential stores an encrypted API token and optional API username for an API-managed host.
+func (r *HostRepository) SetAPICredential(ctx context.Context, id int64, token core.EncryptedSecret, apiUsername string) (core.Host, error) {
+	if _, err := r.db.ExecContext(ctx, `UPDATE hosts SET api_token = NULLIF(?, ''), api_token_nonce = NULLIF(?, ''), api_username = NULLIF(?, '') WHERE id = ?`, token.Ciphertext, token.Nonce, apiUsername, id); err != nil {
+		return core.Host{}, fmt.Errorf("set host %d API credential: %w", id, err)
+	}
+	return r.Get(ctx, id)
 }
 
 // Update mutates host display fields.
@@ -143,7 +151,7 @@ func scanHost(scanner hostScanner) (core.Host, error) {
 	var autoReboot int
 	var autoRebootDelay int
 
-	if err := scanner.Scan(&host.ID, &host.Name, &host.Hostname, &host.SSHPort, &host.SSHUser, &hostType, &host.PackageManager, &host.OSPretty, &host.Arch, &isProxmox, &isSelf, &enabled, &autoReboot, &autoRebootDelay, &host.Notes, &lastSeen, &created, &updated); err != nil {
+	if err := scanner.Scan(&host.ID, &host.Name, &host.Hostname, &host.SSHPort, &host.SSHUser, &hostType, &host.PackageManager, &host.APIUsername, &host.OSPretty, &host.Arch, &isProxmox, &isSelf, &enabled, &autoReboot, &autoRebootDelay, &host.Notes, &lastSeen, &created, &updated); err != nil {
 		return core.Host{}, err
 	}
 	host.Type = core.HostType(hostType)

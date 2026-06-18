@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/TheOriUHD/patchpilot/internal/core"
+	"github.com/TheOriUHD/patchpilot/internal/secret"
 	"github.com/TheOriUHD/patchpilot/migrations"
 )
 
@@ -72,5 +73,51 @@ func TestHostRepositoryCRUD(t *testing.T) {
 	}
 	if len(listed) != 0 {
 		t.Fatalf("List() len after delete = %d, want 0", len(listed))
+	}
+}
+
+func TestHostRepositoryAPICredentialRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db, err := Open(ctx, t.TempDir()+"/patchpilot.db")
+	if err != nil {
+		t.Fatalf("Open() error: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	if err := db.Migrate(ctx, migrations.Files); err != nil {
+		t.Fatalf("Migrate() error: %v", err)
+	}
+	repo := NewHostRepository(db)
+	host, err := repo.Create(ctx, core.HostCreate{Name: "nas", Hostname: "https://truenas.example", SSHUser: "api", Type: core.HostTypeTrueNAS, PackageManager: "truenas_api", Enabled: true})
+	if err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+	manager := secret.NewManager(t.TempDir() + "/secret.key")
+	const tokenValue = "dummy-api-token"
+	ciphertext, nonce, err := manager.EncryptString(ctx, tokenValue)
+	if err != nil {
+		t.Fatalf("EncryptString() error: %v", err)
+	}
+	updated, err := repo.SetAPICredential(ctx, host.ID, core.EncryptedSecret{Ciphertext: ciphertext, Nonce: nonce}, "root")
+	if err != nil {
+		t.Fatalf("SetAPICredential() error: %v", err)
+	}
+	if updated.APIUsername != "root" {
+		t.Fatalf("APIUsername = %q, want root", updated.APIUsername)
+	}
+	stored, err := repo.GetAPIToken(ctx, host.ID)
+	if err != nil {
+		t.Fatalf("GetAPIToken() error: %v", err)
+	}
+	if stored.Ciphertext == tokenValue || stored.Nonce == tokenValue {
+		t.Fatalf("stored token was not encrypted: %#v", stored)
+	}
+	decrypted, err := manager.DecryptString(ctx, stored.Ciphertext, stored.Nonce)
+	if err != nil {
+		t.Fatalf("DecryptString() error: %v", err)
+	}
+	if decrypted != tokenValue {
+		t.Fatalf("decrypted token = %q, want %q", decrypted, tokenValue)
 	}
 }

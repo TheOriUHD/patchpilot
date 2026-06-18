@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"flag"
 	"fmt"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"golang.org/x/term"
 
 	"github.com/TheOriUHD/patchpilot/internal/config"
 	"github.com/TheOriUHD/patchpilot/internal/core"
@@ -63,7 +66,7 @@ func runDaemon() error {
 
 func runHost(args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		_, _ = fmt.Fprintln(stdout, "Usage: patchpilot host <add|list|run|remove>")
+		_, _ = fmt.Fprintln(stdout, "Usage: patchpilot host <add|list|run|remove|credential>")
 		return nil
 	}
 
@@ -106,6 +109,8 @@ func runHost(args []string, stdout io.Writer) error {
 		}
 		_, _ = fmt.Fprintf(stdout, "Started manual run %d for host %d\n", runID, id)
 		return nil
+	case "credential", "api-credential", "set-api-credential":
+		return runHostCredential(args[1:], stdout)
 	case "remove":
 		if len(args) < 2 {
 			return fmt.Errorf("usage: patchpilot host remove <id>")
@@ -128,6 +133,95 @@ func runHost(args []string, stdout io.Writer) error {
 	default:
 		return fmt.Errorf("unknown host command %q", args[0])
 	}
+}
+
+func runHostCredential(args []string, stdout io.Writer) error {
+	flags := flag.NewFlagSet("host credential", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	endpoint := flags.String("endpoint", "", "API host endpoint to match")
+	name := flags.String("name", "", "host name to match")
+	username := flags.String("username", "", "API username for TrueNAS (default root)")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	client, err := daemonClient()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	host, err := resolveCredentialHost(ctx, client, flags.Args(), *endpoint, *name)
+	if err != nil {
+		return err
+	}
+	token, err := readSecretFromTerminal(fmt.Sprintf("API token for %s (%s): ", host.Name, host.Type))
+	if err != nil {
+		return err
+	}
+	defer core.ZeroBytes(token)
+	apiUsername := strings.TrimSpace(*username)
+	if host.Type == core.HostTypeTrueNAS && apiUsername == "" {
+		apiUsername = "root"
+	}
+	updated, err := client.SetHostAPICredential(ctx, host.ID, core.APIHostCredentialInput{APIToken: token, APIUsername: apiUsername})
+	if err != nil {
+		return err
+	}
+	message := fmt.Sprintf("Stored API credential for host %d (%s)", updated.ID, updated.Name)
+	if updated.APIUsername != "" {
+		message += " with API username " + updated.APIUsername
+	}
+	_, _ = fmt.Fprintln(stdout, message)
+	return nil
+}
+
+func resolveCredentialHost(ctx context.Context, client *ipc.Client, args []string, endpoint string, name string) (core.Host, error) {
+	if len(args) > 1 {
+		return core.Host{}, fmt.Errorf("usage: patchpilot host credential <id> [--username root] or --endpoint URL")
+	}
+	if len(args) == 1 {
+		id, err := strconv.ParseInt(args[0], 10, 64)
+		if err != nil {
+			return core.Host{}, fmt.Errorf("parse host id: %w", err)
+		}
+		return client.GetHost(ctx, id)
+	}
+	if strings.TrimSpace(endpoint) == "" && strings.TrimSpace(name) == "" {
+		return core.Host{}, fmt.Errorf("usage: patchpilot host credential <id> [--username root] or --endpoint URL")
+	}
+	hosts, err := client.ListHosts(ctx)
+	if err != nil {
+		return core.Host{}, err
+	}
+	endpoint = normalizeEndpointForMatch(endpoint)
+	name = strings.ToLower(strings.TrimSpace(name))
+	for _, host := range hosts {
+		if endpoint != "" && normalizeEndpointForMatch(host.Hostname) == endpoint {
+			return host, nil
+		}
+		if name != "" && strings.ToLower(host.Name) == name {
+			return host, nil
+		}
+	}
+	return core.Host{}, fmt.Errorf("API host not found; add it in the TUI first, then rerun this command")
+}
+
+func normalizeEndpointForMatch(value string) string {
+	return strings.TrimRight(strings.TrimSpace(value), "/")
+}
+
+func readSecretFromTerminal(prompt string) ([]byte, error) {
+	_, _ = fmt.Fprint(os.Stderr, prompt)
+	secret, err := term.ReadPassword(int(syscall.Stdin))
+	_, _ = fmt.Fprintln(os.Stderr)
+	if err != nil {
+		return nil, fmt.Errorf("read API token: %w", err)
+	}
+	secret = bytes.TrimSpace(secret)
+	if len(secret) == 0 {
+		return nil, fmt.Errorf("API token is required")
+	}
+	return secret, nil
 }
 
 func runSchedule(args []string, stdout io.Writer) error {

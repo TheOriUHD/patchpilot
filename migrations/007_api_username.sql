@@ -1,0 +1,1 @@
+ALTER TABLE hosts ADD COLUMN api_username TEXT DEFAULT '';

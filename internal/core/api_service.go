@@ -22,6 +22,11 @@ type HostAPITokenRepository interface {
 	GetAPIToken(ctx context.Context, id int64) (EncryptedSecret, error)
 }
 
+// HostAPICredentialRepository stores encrypted API credentials for API-managed hosts.
+type HostAPICredentialRepository interface {
+	SetAPICredential(ctx context.Context, id int64, token EncryptedSecret, apiUsername string) (Host, error)
+}
+
 // APIHostVerifyInput contains endpoint data for a native API host.
 type APIHostVerifyInput struct {
 	Type     HostType `json:"host_type"`
@@ -34,11 +39,18 @@ type APIHostCommitInput struct {
 	Type            HostType `json:"host_type"`
 	Endpoint        string   `json:"endpoint"`
 	APIToken        []byte   `json:"-"`
+	APIUsername     string   `json:"api_username"`
 	Name            string   `json:"name"`
 	Notes           string   `json:"notes"`
 	Enabled         bool     `json:"enabled"`
 	AutoReboot      bool     `json:"auto_reboot"`
 	AutoRebootDelay int      `json:"auto_reboot_countdown_seconds"`
+}
+
+// APIHostCredentialInput updates one API-managed host's stored credential.
+type APIHostCredentialInput struct {
+	APIToken    []byte `json:"-"`
+	APIUsername string `json:"api_username"`
 }
 
 // APIComponentStatus describes one HAOS component in the wizard review.
@@ -171,6 +183,7 @@ func (s *HostService) CommitAPIHost(ctx context.Context, input APIHostCommitInpu
 		SSHUser:            "api",
 		Type:               input.Type,
 		PackageManager:     apiPackageManager(input.Type),
+		APIUsername:        normalizeAPIUsername(input.Type, input.APIUsername),
 		OSPretty:           apiOSPretty(input.Type, verify.Version),
 		Enabled:            input.Enabled,
 		AutoReboot:         input.AutoReboot,
@@ -185,6 +198,38 @@ func (s *HostService) CommitAPIHost(ctx context.Context, input APIHostCommitInpu
 	}
 	s.audit(ctx, "tui", "host.add", "host", &host.ID, map[string]any{"name": host.Name, "host_type": host.Type})
 	return host, nil
+}
+
+// SetAPIHostCredential encrypts and stores one API-managed host credential.
+func (s *HostService) SetAPIHostCredential(ctx context.Context, hostID int64, input APIHostCredentialInput) (Host, error) {
+	defer ZeroBytes(input.APIToken)
+	if s.Secrets == nil {
+		return Host{}, fmt.Errorf("API token encryption is not configured")
+	}
+	credentialStore, ok := s.Hosts.(HostAPICredentialRepository)
+	if !ok {
+		return Host{}, fmt.Errorf("host credential storage is not configured")
+	}
+	host, err := s.Hosts.Get(ctx, hostID)
+	if err != nil {
+		return Host{}, err
+	}
+	if host.Type != HostTypeTrueNAS && host.Type != HostTypeHAOS {
+		return Host{}, fmt.Errorf("API credentials are only supported for HAOS and TrueNAS hosts")
+	}
+	if len(input.APIToken) == 0 {
+		return Host{}, fmt.Errorf("API token is required")
+	}
+	ciphertext, nonce, err := s.Secrets.EncryptString(ctx, string(input.APIToken))
+	if err != nil {
+		return Host{}, err
+	}
+	updated, err := credentialStore.SetAPICredential(ctx, hostID, EncryptedSecret{Ciphertext: ciphertext, Nonce: nonce}, normalizeAPIUsername(host.Type, input.APIUsername))
+	if err != nil {
+		return Host{}, err
+	}
+	s.audit(ctx, "tui", "host.api_credential_updated", "host", &hostID, map[string]any{"host_type": updated.Type, "api_username_set": updated.APIUsername != ""})
+	return updated, nil
 }
 
 func (s *HostService) dryRunTrueNAS(ctx context.Context, host Host) (pkgmgr.DryRunResult, error) {
@@ -315,4 +360,15 @@ func defaultAPIHostName(hostType HostType, endpoint string) string {
 	default:
 		return endpoint
 	}
+}
+
+func normalizeAPIUsername(hostType HostType, username string) string {
+	trimmed := strings.TrimSpace(username)
+	if hostType == HostTypeTrueNAS && trimmed == "" {
+		return "root"
+	}
+	if hostType == HostTypeHAOS {
+		return ""
+	}
+	return trimmed
 }

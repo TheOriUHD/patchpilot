@@ -9,6 +9,7 @@ require (
 	github.com/go-chi/chi/v5 v5.2.5
 	github.com/go-co-op/gocron/v2 v2.16.6
 	golang.org/x/crypto v0.28.0
+	golang.org/x/term v0.25.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.36.0
 )

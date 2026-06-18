@@ -18,6 +18,7 @@ type InventoryHost struct {
 	SSHUser         string   `yaml:"ssh_user" json:"ssh_user"`
 	Type            HostType `yaml:"host_type" json:"host_type"`
 	PackageManager  string   `yaml:"package_manager" json:"package_manager"`
+	APIUsername     string   `yaml:"api_username" json:"api_username"`
 	OSPretty        string   `yaml:"os_pretty" json:"os_pretty"`
 	Arch            string   `yaml:"arch" json:"arch"`
 	IsProxmoxHost   bool     `yaml:"is_proxmox_host" json:"is_proxmox_host"`

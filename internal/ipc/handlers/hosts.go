@@ -9,6 +9,11 @@ import (
 	"github.com/TheOriUHD/patchpilot/internal/core"
 )
 
+type apiCredentialRequest struct {
+	APIToken    string `json:"api_token"`
+	APIUsername string `json:"api_username"`
+}
+
 // RegisterHosts mounts host inventory endpoints.
 func RegisterHosts(router chi.Router, service *core.HostService, orchestrator *core.Orchestrator) {
 	router.Route("/api/hosts", func(r chi.Router) {
@@ -110,6 +115,28 @@ func RegisterHosts(router chi.Router, service *core.HostService, orchestrator *c
 				return
 			}
 			writeJSON(w, http.StatusOK, result)
+		})
+
+		r.Post("/{id}/api-credential", func(w http.ResponseWriter, req *http.Request) {
+			id, err := idParam(req, "id")
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			if rejectHostMutationWhenInFlight(req.Context(), w, orchestrator, id, "cannot update API credential while update is in progress") {
+				return
+			}
+			var input apiCredentialRequest
+			if err := readJSON(req, &input); err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			host, err := service.SetAPIHostCredential(req.Context(), id, core.APIHostCredentialInput{APIToken: []byte(input.APIToken), APIUsername: input.APIUsername})
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, host)
 		})
 
 		r.Post("/{id}/run", func(w http.ResponseWriter, req *http.Request) {

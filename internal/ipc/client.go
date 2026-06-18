@@ -75,6 +75,16 @@ func (c *Client) UpdateHost(ctx context.Context, id int64, input core.HostUpdate
 	return host, nil
 }
 
+// SetHostAPICredential updates the encrypted API credential for an API-managed host.
+func (c *Client) SetHostAPICredential(ctx context.Context, id int64, input core.APIHostCredentialInput) (core.Host, error) {
+	var host core.Host
+	body := map[string]any{"api_token": string(input.APIToken), "api_username": input.APIUsername}
+	if err := c.doJSON(ctx, http.MethodPost, fmt.Sprintf("/api/hosts/%d/api-credential", id), body, &host); err != nil {
+		return core.Host{}, err
+	}
+	return host, nil
+}
+
 // ToggleHost toggles host enabled state.
 func (c *Client) ToggleHost(ctx context.Context, id int64) (core.Host, error) {
 	var host core.Host
@@ -316,7 +326,7 @@ func (c *Client) CheckAPIHost(ctx context.Context, input core.APIHostVerifyInput
 // CommitAPIHost saves a verified native API host to inventory.
 func (c *Client) CommitAPIHost(ctx context.Context, input core.APIHostCommitInput) (core.Host, error) {
 	var host core.Host
-	body := map[string]any{"host_type": input.Type, "endpoint": input.Endpoint, "api_token": string(input.APIToken), "name": input.Name, "notes": input.Notes, "enabled": input.Enabled, "auto_reboot": input.AutoReboot, "auto_reboot_countdown_seconds": input.AutoRebootDelay}
+	body := map[string]any{"host_type": input.Type, "endpoint": input.Endpoint, "api_token": string(input.APIToken), "api_username": input.APIUsername, "name": input.Name, "notes": input.Notes, "enabled": input.Enabled, "auto_reboot": input.AutoReboot, "auto_reboot_countdown_seconds": input.AutoRebootDelay}
 	if err := c.doJSON(ctx, http.MethodPost, "/api/wizard/api/commit", body, &host); err != nil {
 		return core.Host{}, err
 	}

@@ -102,7 +102,7 @@ func RegisterWizard(router chi.Router, service *core.HostService) {
 			}
 			token := []byte(input.APIToken)
 			defer core.ZeroBytes(token)
-			host, err := service.CommitAPIHost(req.Context(), core.APIHostCommitInput{Type: input.Type, Endpoint: input.Endpoint, APIToken: token, Name: input.Name, Notes: input.Notes, Enabled: input.Enabled, AutoReboot: input.AutoReboot, AutoRebootDelay: input.AutoRebootDelay})
+			host, err := service.CommitAPIHost(req.Context(), core.APIHostCommitInput{Type: input.Type, Endpoint: input.Endpoint, APIToken: token, APIUsername: input.APIUsername, Name: input.Name, Notes: input.Notes, Enabled: input.Enabled, AutoReboot: input.AutoReboot, AutoRebootDelay: input.AutoRebootDelay})
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
@@ -171,15 +171,17 @@ type bootstrapStartRequest struct {
 }
 
 type apiHostRequest struct {
-	Type     core.HostType `json:"host_type"`
-	Endpoint string        `json:"endpoint"`
-	APIToken string        `json:"api_token"`
+	Type        core.HostType `json:"host_type"`
+	Endpoint    string        `json:"endpoint"`
+	APIToken    string        `json:"api_token"`
+	APIUsername string        `json:"api_username"`
 }
 
 type apiHostCommitRequest struct {
 	Type            core.HostType `json:"host_type"`
 	Endpoint        string        `json:"endpoint"`
 	APIToken        string        `json:"api_token"`
+	APIUsername     string        `json:"api_username"`
 	Name            string        `json:"name"`
 	Notes           string        `json:"notes"`
 	Enabled         bool          `json:"enabled"`
