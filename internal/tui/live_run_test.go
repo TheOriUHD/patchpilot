@@ -246,6 +246,45 @@ func TestLiveRunLogViewportClampsNoisyOutput(t *testing.T) {
 	}
 }
 
+func TestLiveRunLogViewportContainsAptProgressInsideModal(t *testing.T) {
+	t.Parallel()
+
+	m := liveRunTestModel()
+	m.liveLogLines = append(m.liveLogLines,
+		liveLogEntry{hostRunID: 10, hostName: "debian", line: "Preparing to unpack very-long-package-name " + strings.Repeat("apt-output ", 50)},
+		liveLogEntry{hostRunID: 10, hostName: "debian", line: "(Reading database ... 5%\r(Reading database ... 55%\r(Reading database ... 100%)"},
+		liveLogEntry{hostRunID: 10, hostName: "debian", line: "configuring.0m"},
+		liveLogEntry{hostRunID: 10, hostName: "debian", line: "\x1b[31mcolored apt line\x1b[0m"},
+	)
+
+	rendered := m.renderLiveRunOverlay(30)
+	plain := ansiPattern.ReplaceAllString(rendered, "")
+	if strings.Contains(plain, "\x1b") || strings.Contains(plain, "\r") || strings.Contains(plain, "ring.0m") || strings.Contains(plain, "[0m") {
+		t.Fatalf("live modal leaked control/reset text:\n%s", plain)
+	}
+	if strings.Contains(plain, "(Reading database ... 5%") || strings.Contains(plain, "(Reading database ... 55%") {
+		t.Fatalf("live modal rendered intermediate CR progress fragments:\n%s", plain)
+	}
+	if !strings.Contains(plain, "(Reading database ... 100%)") {
+		t.Fatalf("live modal missing final CR progress state:\n%s", plain)
+	}
+	lines := strings.Split(strings.TrimSuffix(plain, "\n"), "\n")
+	for index, line := range lines {
+		if width := lipgloss.Width(line); width > m.width {
+			t.Fatalf("line %d width = %d, want <= %d: %q", index+1, width, m.width, line)
+		}
+		if strings.HasPrefix(line, "(Reading database") || strings.HasPrefix(line, "(") {
+			t.Fatalf("line %d starts at terminal edge, want modal border before content: %q", index+1, line)
+		}
+		if strings.Contains(line, "(Reading database") {
+			column := strings.Index(line, "(Reading database")
+			if !strings.Contains(line[:column], "│") {
+				t.Fatalf("line %d has apt progress without left modal border: %q", index+1, line)
+			}
+		}
+	}
+}
+
 func TestAutoRebootCountdownCancellation(t *testing.T) {
 	t.Parallel()
 

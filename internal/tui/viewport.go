@@ -29,7 +29,7 @@ func RenderClampedLines(input ViewportInput) []string {
 
 	lines := make([]string, 0, len(input.Lines))
 	for _, line := range input.Lines {
-		lines = append(lines, clampLineWidth(stripANSISequences(line), input.Width))
+		lines = append(lines, clampLineWidth(cleanViewportLine(line), input.Width))
 	}
 
 	start := 0
@@ -49,6 +49,36 @@ func RenderClampedLines(input ViewportInput) []string {
 		output = append(output, "")
 	}
 	return output
+}
+
+func cleanViewportLine(line string) string {
+	cleaned := stripANSISequences(line)
+	cleaned = collapseCarriageReturns(cleaned)
+	return stripANSIRemnants(cleaned)
+}
+
+func collapseCarriageReturns(line string) string {
+	if !strings.ContainsRune(line, '\r') {
+		return line
+	}
+	parts := strings.Split(line, "\r")
+	for index := len(parts) - 1; index >= 0; index-- {
+		if parts[index] != "" {
+			return parts[index]
+		}
+	}
+	return ""
+}
+
+func stripANSIRemnants(line string) string {
+	cleaned := strings.ReplaceAll(line, "[0m", "")
+	cleaned = strings.ReplaceAll(cleaned, "[39m", "")
+	cleaned = strings.ReplaceAll(cleaned, "[49m", "")
+	cleaned = strings.ReplaceAll(cleaned, ".0m", ".")
+	if cleaned == "0m" {
+		return ""
+	}
+	return cleaned
 }
 
 func clampLineWidth(line string, width int) string {

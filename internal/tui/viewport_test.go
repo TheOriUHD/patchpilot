@@ -62,3 +62,22 @@ func TestRenderClampedLinesStripsANSI(t *testing.T) {
 		t.Fatalf("line = %q, want ANSI stripped text", lines[0])
 	}
 }
+
+func TestRenderClampedLinesCollapsesCarriageReturnProgress(t *testing.T) {
+	t.Parallel()
+
+	input := "(Reading database ... 5%\r(Reading database ... 55%\r(Reading database ... 100%)"
+	lines := RenderClampedLines(ViewportInput{Lines: []string{input}, Width: 80, Height: 1})
+	if got, want := lines[0], "(Reading database ... 100%)"; got != want {
+		t.Fatalf("line = %q, want %q", got, want)
+	}
+}
+
+func TestRenderClampedLinesDropsMalformedResetFragments(t *testing.T) {
+	t.Parallel()
+
+	lines := RenderClampedLines(ViewportInput{Lines: []string{"configuring.0m", "[0m", "\x1b[32mok\x1b[0m"}, Width: 40, Height: 3})
+	if lines[0] != "configuring." || lines[1] != "" || lines[2] != "ok" {
+		t.Fatalf("lines = %#v, want reset fragments stripped", lines)
+	}
+}
