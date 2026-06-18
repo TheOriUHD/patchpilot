@@ -386,14 +386,18 @@ func (m model) handleBootstrapEvent(msg bootstrapEventMsg) (model, tea.Cmd) {
 		}
 	case "bootstrap.complete":
 		var summary core.BootstrapSummary
-		if err := json.Unmarshal(msg.event.Data, &summary); err == nil {
-			m.wizard.summary = &summary
-			m.wizard.step = wizardStepReview
-			m.wizard.focus = 0
-			m.wizard.name = fallbackName(summary.Facts.Hostname, m.wizard.hostname)
+		if err := json.Unmarshal(msg.event.Data, &summary); err != nil {
 			m.wizard.zeroSecrets()
+			m.wizard.step = wizardStepError
+			m.wizard.errorMessage = "Bootstrap completed, but patchpilot could not read the completion summary: " + err.Error()
 			return m, nil
 		}
+		m.wizard.summary = &summary
+		m.wizard.step = wizardStepReview
+		m.wizard.focus = 0
+		m.wizard.name = fallbackName(summary.Facts.Hostname, m.wizard.hostname)
+		m.wizard.zeroSecrets()
+		return m, nil
 	case "bootstrap.error":
 		var payload map[string]string
 		_ = json.Unmarshal(msg.event.Data, &payload)
@@ -855,16 +859,39 @@ func checkAPIHostCmd(ctx context.Context, client *ipc.Client, wizard standardWiz
 func nextBootstrapEventCmd(events <-chan stream.Event, errors <-chan error) tea.Cmd {
 	return func() tea.Msg {
 		select {
-		case err, ok := <-errors:
-			if ok && err != nil {
-				return bootstrapEventMsg{err: err}
-			}
-			return bootstrapEventMsg{done: true}
 		case event, ok := <-events:
 			if !ok {
 				return bootstrapEventMsg{done: true}
 			}
 			return bootstrapEventMsg{event: event}
+		default:
+		}
+
+		activeErrors := errors
+		for {
+			select {
+			case err, ok := <-activeErrors:
+				if ok && err != nil {
+					return bootstrapEventMsg{err: err}
+				}
+				activeErrors = nil
+			default:
+				goto wait
+			}
+		}
+
+	wait:
+		select {
+		case event, ok := <-events:
+			if !ok {
+				return bootstrapEventMsg{done: true}
+			}
+			return bootstrapEventMsg{event: event}
+		case err, ok := <-activeErrors:
+			if ok && err != nil {
+				return bootstrapEventMsg{err: err}
+			}
+			return nextBootstrapEventCmd(events, nil)()
 		}
 	}
 }
