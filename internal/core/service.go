@@ -138,13 +138,13 @@ func (s *HostService) DetectStandard(ctx context.Context, input StandardDetectIn
 	port := normalizePort(input.SSHPort)
 	runner, err := remotessh.ConnectPassword(ctx, input.Hostname, port, input.SSHUser, input.Password)
 	if err != nil {
-		return StandardDetectResult{}, fmt.Errorf("connect to %s as %s: %w", input.Hostname, input.SSHUser, err)
+		return StandardDetectResult{}, classifyBootstrapConnectionFailure("Connecting via SSH as "+input.SSHUser, fmt.Errorf("connect to %s as %s: %w", input.Hostname, input.SSHUser, err))
 	}
 	defer func() { _ = runner.Close() }()
 
 	result, err := runner.Run(ctx, StandardDetectionProbe, nil)
 	if err != nil {
-		return StandardDetectResult{}, fmt.Errorf("run detection probe: %w", err)
+		return StandardDetectResult{}, ClassifyBootstrapFailure("Detection probe", StandardDetectionProbe, result, fmt.Errorf("run detection probe: %w", err))
 	}
 	facts, err := ParseHostFacts(result.Stdout + "\n" + result.Stderr)
 	if err != nil {
@@ -162,7 +162,7 @@ func (s *HostService) RootAssist(ctx context.Context, input RootAssistInput) err
 	port := normalizePort(input.SSHPort)
 	runner, err := remotessh.ConnectPassword(ctx, input.Hostname, port, "root", input.RootPassword)
 	if err != nil {
-		return fmt.Errorf("connect as root: %w", err)
+		return classifyBootstrapConnectionFailure("Connecting via SSH as root", fmt.Errorf("connect as root: %w", err))
 	}
 	defer func() { _ = runner.Close() }()
 
@@ -171,8 +171,9 @@ func (s *HostService) RootAssist(ctx context.Context, input RootAssistInput) err
 		manager = pkgmgr.ManagerAPT
 	}
 	for _, command := range rootAssistCommands(manager, input.SSHUser, input.Diagnosis) {
-		if _, err := runner.Run(ctx, command, nil); err != nil {
-			return fmt.Errorf("apply root assist command %q: %w", command, err)
+		result, err := runner.Run(ctx, command, nil)
+		if err != nil {
+			return ClassifyBootstrapFailure("Root assist", command, result, fmt.Errorf("apply root assist command %q: %w", command, err))
 		}
 	}
 	return nil
@@ -440,9 +441,10 @@ func (s *HostService) runBootstrapSession(ctx context.Context, sessionID string,
 	}()
 	reportError := func(step string, err error) {
 		bootstrapDebugf("runBootstrapSession: reportError session=%s step=%q err=%v", sessionID, step, err)
-		reporter.Report(BootstrapEvent{Step: step, Status: BootstrapStepFailed, Message: err.Error()})
+		code, guidance := bootstrapErrorDetails(err)
+		reporter.Report(BootstrapEvent{Step: step, Status: BootstrapStepFailed, Message: bootstrapErrorMessage(err), Code: string(code), Guidance: guidance})
 		bootstrapDebugf("runBootstrapSession: before publish bootstrap.error session=%s step=%q", sessionID, step)
-		_ = s.Streams.Publish(sessionID, "bootstrap.error", map[string]string{"error": err.Error()})
+		_ = s.Streams.Publish(sessionID, "bootstrap.error", map[string]string{"error": bootstrapErrorMessage(err), "code": string(code), "guidance": guidance})
 		bootstrapDebugf("runBootstrapSession: after publish bootstrap.error session=%s step=%q", sessionID, step)
 	}
 
@@ -455,7 +457,7 @@ func (s *HostService) runBootstrapSession(ctx context.Context, sessionID string,
 	bootstrapDebugf("runBootstrapSession: before ConnectPassword session=%s", sessionID)
 	runner, err := remotessh.ConnectPassword(ctx, input.Hostname, normalizePort(input.SSHPort), input.SSHUser, password)
 	if err != nil {
-		reportError("Connecting via SSH as "+input.SSHUser, err)
+		reportError("Connecting via SSH as "+input.SSHUser, classifyBootstrapConnectionFailure("Connecting via SSH as "+input.SSHUser, err))
 		return
 	}
 	bootstrapDebugf("runBootstrapSession: after ConnectPassword session=%s", sessionID)
@@ -486,7 +488,7 @@ func (s *HostService) runBootstrapSession(ctx context.Context, sessionID string,
 	bootstrapDebugf("runBootstrapSession: before reconnectPatchpilotWithRetry session=%s", sessionID)
 	patchpilotRunner, err := s.reconnectPatchpilotWithRetry(ctx, input.Hostname, normalizePort(input.SSHPort), keypair, reporter, patchpilotReconnectDelays)
 	if err != nil {
-		reportError("Reconnecting as patchpilot with key", err)
+		reportError("Reconnecting as patchpilot with key", classifyBootstrapConnectionFailure("Reconnecting as patchpilot with key", err))
 		return
 	}
 	bootstrapDebugf("runBootstrapSession: after reconnectPatchpilotWithRetry session=%s", sessionID)
@@ -582,7 +584,7 @@ func (s *HostService) dryRunWithRunner(ctx context.Context, runner remotessh.Run
 	}
 	result, err := runner.Run(ctx, command, nil)
 	if err != nil && (manager != pkgmgr.ManagerDNF || result.ExitCode != 100) {
-		return pkgmgr.DryRunResult{}, fmt.Errorf("run dry-run command: %w", err)
+		return pkgmgr.DryRunResult{}, ClassifyBootstrapFailure("Dry run", command, result, fmt.Errorf("run dry-run command: %w", err))
 	}
 	return pkgmgr.ParseDryRunOutput(manager, result.Stdout+"\n"+result.Stderr, result.ExitCode)
 }

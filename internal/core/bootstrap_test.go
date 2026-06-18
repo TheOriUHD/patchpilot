@@ -316,6 +316,81 @@ func TestBootstrapDirectRootInstallsSudoBeforeWritingSudoers(t *testing.T) {
 	}
 }
 
+func TestBootstrapHardFailsWhenSudoersIncludeMissing(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeRunner{responses: map[string]fakeResponse{
+		"resolve_patchpilot_command": {result: remotessh.CommandResult{Stdout: aptResolvedPathsOutput()}},
+		"grep -Eq":                   {result: remotessh.CommandResult{Stderr: "/etc/sudoers does not include @includedir /etc/sudoers.d"}, err: errors.New("exit status 11")},
+	}}
+	_, err := BootstrapStandardWithRunner(context.Background(), runner, BootstrapOptions{
+		Facts:     HostFacts{CurrentUID: "0", PackageManager: pkgmgr.ManagerAPT, SudoPresent: true},
+		Manager:   pkgmgr.ManagerAPT,
+		PublicKey: "ssh-ed25519 AAAA patchpilot",
+	}, nil)
+	if err == nil {
+		t.Fatal("BootstrapStandardWithRunner() expected sudoers include failure")
+	}
+	if !strings.Contains(err.Error(), "@includedir /etc/sudoers.d") {
+		t.Fatalf("error = %q, want includedir guidance", err.Error())
+	}
+	if runner.indexContaining("cat > /etc/sudoers.d/patchpilot") != -1 {
+		t.Fatalf("commands = %#v; must not write sudoers when include precheck fails", runner.commands)
+	}
+}
+
+func TestClassifyBootstrapFailureNamesCommonPreconditions(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		step     string
+		command  string
+		result   remotessh.CommandResult
+		wantCode BootstrapErrorCode
+		wantText string
+	}{
+		{name: "sudoers include", step: "Checking sudoers include", result: remotessh.CommandResult{Stderr: "add @includedir /etc/sudoers.d"}, wantCode: BootstrapErrorSudoersInclude, wantText: "@includedir /etc/sudoers.d"},
+		{name: "package lock", step: "Installing sudo", result: remotessh.CommandResult{Stderr: "Could not get lock /var/lib/dpkg/lock-frontend"}, wantCode: BootstrapErrorPackageLock, wantText: "package manager is locked"},
+		{name: "network repo", step: "Installing sudo", result: remotessh.CommandResult{Stderr: "Temporary failure resolving deb.debian.org"}, wantCode: BootstrapErrorNetwork, wantText: "repository"},
+		{name: "sudo password", step: "Verifying NOPASSWD sudo", result: remotessh.CommandResult{Stderr: "sudo: a password is required"}, wantCode: BootstrapErrorNOPASSWD, wantText: "without a password"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			err := ClassifyBootstrapFailure(test.step, test.command, test.result, errors.New("exit status 1"))
+			var classified *BootstrapError
+			if !errors.As(err, &classified) {
+				t.Fatalf("classified error type = %T", err)
+			}
+			if classified.Code != test.wantCode {
+				t.Fatalf("Code = %q, want %q", classified.Code, test.wantCode)
+			}
+			if !strings.Contains(err.Error(), test.wantText) {
+				t.Fatalf("error = %q, want %q", err.Error(), test.wantText)
+			}
+		})
+	}
+}
+
+func TestRollbackBootstrapDoesNotUninstallSudo(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeRunner{}
+	RollbackBootstrap(context.Background(), runner, HostFacts{CurrentUID: "0", PackageManager: pkgmgr.ManagerAPT}, nil, nil, pkgmgr.ManagerAPT, map[string]string{
+		"apt-get": "/usr/bin/apt-get",
+		"apt":     "/usr/bin/apt",
+		"dpkg":    "/usr/bin/dpkg",
+		"test":    "/usr/bin/test",
+	}, nil)
+	joined := strings.Join(runner.commands, "\n")
+	for _, forbidden := range []string{"remove sudo", "purge sudo", "uninstall sudo"} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("rollback must not uninstall sudo; commands=%#v", runner.commands)
+		}
+	}
+}
+
 func TestResolveCommandPathsStripsLeadingSuPasswordPrompt(t *testing.T) {
 	t.Parallel()
 
@@ -350,7 +425,7 @@ func TestSuPromptOnlyFailureMessage(t *testing.T) {
 }
 
 func aptResolvedPathsOutput() string {
-	return "apt-get\t/usr/bin/apt-get\napt\t/usr/bin/apt\ndpkg\t/usr/bin/dpkg\ntest\t/usr/bin/test\nsystemctl\t/usr/bin/systemctl\nreboot\t/usr/sbin/reboot\nshutdown\t/usr/sbin/shutdown\n"
+	return "apt-get\t/usr/bin/apt-get\napt\t/usr/bin/apt\ndpkg\t/usr/bin/dpkg\ntest\t/usr/bin/test\nsystemctl\t/usr/bin/systemctl\nreboot\t/usr/sbin/reboot\nshutdown\t/usr/sbin/shutdown\nid\t/usr/bin/id\ninstall\t/usr/bin/install\nchown\t/usr/bin/chown\nchmod\t/usr/bin/chmod\nrm\t/usr/bin/rm\nuseradd\t/usr/sbin/useradd\nusermod\t/usr/sbin/usermod\ngroupadd\t/usr/sbin/groupadd\nuserdel\t/usr/sbin/userdel\nvisudo\t/usr/sbin/visudo\ndeluser\t/usr/sbin/deluser\n"
 }
 
 type fakeResponse struct {

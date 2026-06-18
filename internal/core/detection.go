@@ -26,6 +26,7 @@ const StandardDetectionProbe = `{
      echo "---SUDO_NPW---"; sudo -n true 2>&1 >/dev/null && echo yes || echo no
 	echo "---SUDOERS_FILE---"; test -f /etc/sudoers && echo present || echo missing
 	echo "---SUDOERS_DIR---";  test -d /etc/sudoers.d && echo present || echo missing
+	echo "---SUDOERS_INCLUDE---"; test -f /etc/sudoers && grep -Eq '^[[:space:]]*#?[[:space:]]*@?includedir[[:space:]]+/etc/sudoers\.d([[:space:]]|$)' /etc/sudoers && echo present || echo missing
 	echo "---SU---";       command -v su >/dev/null && echo present || echo missing
      echo "---CURRENT_UID---"; id -u
      echo "---UPMGR_USER---"; id patchpilot 2>/dev/null && echo exists || echo missing
@@ -33,24 +34,25 @@ const StandardDetectionProbe = `{
 
 // HostFacts is the structured result parsed from the Standard detection probe.
 type HostFacts struct {
-	OSPretty             string                  `json:"os_pretty"`
-	OSID                 string                  `json:"os_id"`
-	Kernel               string                  `json:"kernel"`
-	Arch                 string                  `json:"arch"`
-	Hostname             string                  `json:"hostname"`
-	PackageManager       pkgmgr.PackageManager   `json:"package_manager"`
-	PackageManagersFound []pkgmgr.PackageManager `json:"package_managers_found"`
-	IsProxmox            bool                    `json:"is_proxmox"`
-	IsHAOS               bool                    `json:"is_haos"`
-	IsTrueNAS            bool                    `json:"is_truenas"`
-	SudoPresent          bool                    `json:"sudo_present"`
-	SudoNoPassword       bool                    `json:"sudo_no_password"`
-	SudoersFilePresent   bool                    `json:"sudoers_file_present"`
-	SudoersDirPresent    bool                    `json:"sudoers_dir_present"`
-	SuPresent            bool                    `json:"su_present"`
-	CurrentUID           string                  `json:"current_uid"`
-	PatchpilotUserExists bool                    `json:"patchpilot_user_exists"`
-	Sections             map[string]string       `json:"sections"`
+	OSPretty              string                  `json:"os_pretty"`
+	OSID                  string                  `json:"os_id"`
+	Kernel                string                  `json:"kernel"`
+	Arch                  string                  `json:"arch"`
+	Hostname              string                  `json:"hostname"`
+	PackageManager        pkgmgr.PackageManager   `json:"package_manager"`
+	PackageManagersFound  []pkgmgr.PackageManager `json:"package_managers_found"`
+	IsProxmox             bool                    `json:"is_proxmox"`
+	IsHAOS                bool                    `json:"is_haos"`
+	IsTrueNAS             bool                    `json:"is_truenas"`
+	SudoPresent           bool                    `json:"sudo_present"`
+	SudoNoPassword        bool                    `json:"sudo_no_password"`
+	SudoersFilePresent    bool                    `json:"sudoers_file_present"`
+	SudoersDirPresent     bool                    `json:"sudoers_dir_present"`
+	SudoersIncludePresent bool                    `json:"sudoers_include_present"`
+	SuPresent             bool                    `json:"su_present"`
+	CurrentUID            string                  `json:"current_uid"`
+	PatchpilotUserExists  bool                    `json:"patchpilot_user_exists"`
+	Sections              map[string]string       `json:"sections"`
 }
 
 // ParseHostFacts parses the detection probe output into HostFacts.
@@ -83,6 +85,7 @@ func ParseHostFacts(output string) (HostFacts, error) {
 	facts.SudoNoPassword = parseYesNo(sections["SUDO_NPW"])
 	facts.SudoersFilePresent = strings.Contains(strings.ToLower(sections["SUDOERS_FILE"]), "present")
 	facts.SudoersDirPresent = strings.Contains(strings.ToLower(sections["SUDOERS_DIR"]), "present")
+	facts.SudoersIncludePresent = strings.Contains(strings.ToLower(sections["SUDOERS_INCLUDE"]), "present")
 	facts.SuPresent = strings.Contains(strings.ToLower(sections["SU"]), "present")
 	facts.CurrentUID = firstNonEmptyLine(sections["CURRENT_UID"])
 	facts.PatchpilotUserExists = strings.Contains(strings.ToLower(sections["UPMGR_USER"]), "exists")

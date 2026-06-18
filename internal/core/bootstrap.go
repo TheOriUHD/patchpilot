@@ -25,9 +25,11 @@ const (
 
 // BootstrapEvent is a progress event emitted during Standard host onboarding.
 type BootstrapEvent struct {
-	Step    string              `json:"step"`
-	Status  BootstrapStepStatus `json:"status"`
-	Message string              `json:"message"`
+	Step     string              `json:"step"`
+	Status   BootstrapStepStatus `json:"status"`
+	Message  string              `json:"message"`
+	Code     string              `json:"code,omitempty"`
+	Guidance string              `json:"guidance,omitempty"`
 }
 
 // BootstrapReporter receives bootstrap progress events.
@@ -68,6 +70,9 @@ type BootstrapCommands struct {
 
 // GenerateBootstrapCommands returns the concrete shell commands for target bootstrap.
 func GenerateBootstrapCommands(publicKey string, sourceIP string, manager pkgmgr.PackageManager, resolvedPaths map[string]string) (BootstrapCommands, error) {
+	if err := validateBootstrapPublicKey(publicKey); err != nil {
+		return BootstrapCommands{}, err
+	}
 	sudoersEntry, err := pkgmgr.SudoersEntry("patchpilot", manager, resolvedPaths)
 	if err != nil {
 		return BootstrapCommands{}, err
@@ -152,8 +157,14 @@ func BootstrapStandardWithRunner(ctx context.Context, runner remotessh.Runner, o
 	if err != nil {
 		return BootstrapResult{}, err
 	}
+	if err := validateBootstrapAdminTools(manager, paths, true); err != nil {
+		return BootstrapResult{}, err
+	}
 	commands, err := GenerateBootstrapCommands(options.PublicKey, options.SourceIP, manager, paths)
 	if err != nil {
+		return BootstrapResult{}, err
+	}
+	if err := verifySudoersSubsystem(ctx, runner, reporter, options.Facts, options.Password); err != nil {
 		return BootstrapResult{}, err
 	}
 
@@ -176,12 +187,14 @@ func BootstrapStandardWithRunner(ctx context.Context, runner remotessh.Runner, o
 	reportBootstrapEvent(reporter, BootstrapEvent{Step: "Validating sudoers with visudo -cf", Status: BootstrapStepRunning, Message: "Checking sudoers syntax before closing privileged session"})
 	if result, _, err := runEscalated(ctx, runner, escalationInput{Facts: options.Facts, Password: options.Password}, commands.ValidateSudoers); err != nil {
 		_, _, rollbackErr := runEscalated(ctx, runner, escalationInput{Facts: options.Facts, Password: options.Password}, commands.RollbackSudoers)
-		message := strings.TrimSpace(result.Stderr + "\n" + result.Stdout)
+		classified := ClassifyBootstrapFailure("Validating sudoers with visudo -cf", commands.ValidateSudoers, result, err)
+		message := bootstrapErrorMessage(classified)
 		if rollbackErr != nil {
 			message = message + "; rollback failed: " + rollbackErr.Error()
 		}
-		reportBootstrapEvent(reporter, BootstrapEvent{Step: "Validating sudoers with visudo -cf", Status: BootstrapStepFailed, Message: message})
-		return BootstrapResult{}, fmt.Errorf("validate sudoers and rollback invalid file: %w", err)
+		code, guidance := bootstrapErrorDetails(classified)
+		reportBootstrapEvent(reporter, BootstrapEvent{Step: "Validating sudoers with visudo -cf", Status: BootstrapStepFailed, Message: message, Code: string(code), Guidance: guidance})
+		return BootstrapResult{}, classified
 	}
 	reportBootstrapEvent(reporter, BootstrapEvent{Step: "Validating sudoers with visudo -cf", Status: BootstrapStepSuccess, Message: "sudoers syntax is valid"})
 
@@ -203,19 +216,69 @@ func installSudoDirectRoot(ctx context.Context, runner remotessh.Runner, reporte
 	return runStep(ctx, runner, reporter, "Installing sudo", "Installing sudo package for patchpilot privilege policy", install, nil)
 }
 
+func verifySudoersSubsystem(ctx context.Context, runner remotessh.Runner, reporter BootstrapReporter, facts HostFacts, password []byte) error {
+	if !facts.SudoPresent {
+		return nil
+	}
+	command := `if ! test -f /etc/sudoers; then
+	printf 'missing /etc/sudoers\n' >&2
+	exit 10
+fi
+if ! grep -Eq '^[[:space:]]*#?[[:space:]]*@?includedir[[:space:]]+/etc/sudoers\.d([[:space:]]|$)' /etc/sudoers; then
+	printf '/etc/sudoers does not include @includedir /etc/sudoers.d. Add @includedir /etc/sudoers.d to /etc/sudoers manually, validate with visudo, then retry.\n' >&2
+	exit 11
+fi`
+	return runEscalatedStep(ctx, runner, reporter, facts, password, "Checking sudoers include", "Verifying /etc/sudoers includes /etc/sudoers.d", command)
+}
+
+func validateBootstrapPublicKey(publicKey string) error {
+	fields := strings.Fields(strings.TrimSpace(publicKey))
+	if len(fields) < 2 || !validSSHPublicKeyType(fields[0]) {
+		return newBootstrapError("Installing orchestrator public key", BootstrapErrorPublicKeyInvalid, "the orchestrator public key is not a valid SSH public key", "Regenerate or repair the patchpilot keypair, then retry bootstrap.", fmt.Errorf("invalid public key"), publicKey)
+	}
+	return nil
+}
+
+func validSSHPublicKeyType(keyType string) bool {
+	return strings.HasPrefix(keyType, "ssh-") || strings.HasPrefix(keyType, "ecdsa-") || strings.HasPrefix(keyType, "sk-")
+}
+
+func validateBootstrapAdminTools(manager pkgmgr.PackageManager, resolvedPaths map[string]string, requireVisudo bool) error {
+	required := []string{"id", "install", "chown", "chmod", "rm"}
+	if requireVisudo {
+		required = append(required, "visudo")
+	}
+	if manager == pkgmgr.ManagerAPK {
+		required = append(required, "adduser")
+	} else {
+		required = append(required, "useradd")
+	}
+	for _, name := range required {
+		path := strings.TrimSpace(resolvedPaths[name])
+		if !strings.HasPrefix(path, "/") {
+			return newBootstrapError("Resolving bootstrap administration tools", BootstrapErrorAdminToolMissing, fmt.Sprintf("required bootstrap administration tool %s is missing", name), "Install "+name+" or the package that provides it on the target host, then retry bootstrap.", fmt.Errorf("missing admin tool %s", name), "")
+		}
+	}
+	return nil
+}
+
 func bootstrapStandardWithSu(ctx context.Context, runner remotessh.Runner, options BootstrapOptions, manager pkgmgr.PackageManager, reporter BootstrapReporter) (BootstrapResult, error) {
 	reporter = nonNilReporter(reporter)
 	escalation := escalationInput{Facts: options.Facts, Password: options.Password, RootPassword: options.RootPassword, ForceSu: true}
 	reportBootstrapEvent(reporter, BootstrapEvent{Step: "Privilege check", Status: BootstrapStepRunning, Message: "Using su through the existing SSH session"})
 	if result, _, err := runEscalated(ctx, runner, escalation, "true"); err != nil {
-		message := suFailureMessage(result, err)
-		reportBootstrapEvent(reporter, BootstrapEvent{Step: "Privilege check", Status: BootstrapStepFailed, Message: message})
-		return BootstrapResult{}, fmt.Errorf("%s", message)
+		classified := ClassifyBootstrapFailure("Privilege check", "true", result, err)
+		code, guidance := bootstrapErrorDetails(classified)
+		reportBootstrapEvent(reporter, BootstrapEvent{Step: "Privilege check", Status: BootstrapStepFailed, Message: bootstrapErrorMessage(classified), Code: string(code), Guidance: guidance})
+		return BootstrapResult{}, classified
 	}
 	reportBootstrapEvent(reporter, BootstrapEvent{Step: "Privilege check", Status: BootstrapStepSuccess, Message: "su authentication accepted"})
 
 	paths, err := resolveBootstrapCommandPathsWithEscalation(ctx, runner, reporter, escalation, manager)
 	if err != nil {
+		return BootstrapResult{}, err
+	}
+	if err := validateBootstrapAdminTools(manager, paths, options.Facts.SudoPresent); err != nil {
 		return BootstrapResult{}, err
 	}
 	commands, err := GenerateBootstrapCommands(options.PublicKey, options.SourceIP, manager, paths)
@@ -229,9 +292,10 @@ func bootstrapStandardWithSu(ctx context.Context, runner remotessh.Runner, optio
 	reportBootstrapEvent(reporter, BootstrapEvent{Step: "Bootstrapping with su", Status: BootstrapStepRunning, Message: "Installing sudo if needed and configuring patchpilot"})
 	result, _, err := runEscalated(ctx, runner, escalation, batch)
 	if err != nil {
-		message := suFailureMessage(result, err)
-		reportBootstrapEvent(reporter, BootstrapEvent{Step: "Bootstrapping with su", Status: BootstrapStepFailed, Message: message})
-		return BootstrapResult{}, fmt.Errorf("bootstrap with su: %w", err)
+		classified := ClassifyBootstrapFailure("Bootstrapping with su", batch, result, err)
+		code, guidance := bootstrapErrorDetails(classified)
+		reportBootstrapEvent(reporter, BootstrapEvent{Step: "Bootstrapping with su", Status: BootstrapStepFailed, Message: bootstrapErrorMessage(classified), Code: string(code), Guidance: guidance})
+		return BootstrapResult{}, classified
 	}
 	reportBootstrapEvent(reporter, BootstrapEvent{Step: "Bootstrapping with su", Status: BootstrapStepSuccess, Message: "patchpilot user and sudoers configured"})
 	return BootstrapResult{ResolvedPaths: paths, SudoersEntry: mustSudoers(manager, paths)}, nil
@@ -250,6 +314,7 @@ func suBootstrapBatch(manager pkgmgr.PackageManager, commands BootstrapCommands,
 		builder.WriteString("patchpilot_step 'install sudo'\n")
 		builder.WriteString(install)
 		builder.WriteByte('\n')
+		builder.WriteString("command -v visudo >/dev/null 2>&1 || { printf 'visudo is missing after sudo install; install or repair sudo and retry.\\n' >&2; exit 12; }\n")
 	}
 	builder.WriteString("patchpilot_step 'create patchpilot user'\n")
 	builder.WriteString(commands.CreateUser)
@@ -387,9 +452,10 @@ func resolveOptionalCommandPathsWithEscalation(ctx context.Context, runner remot
 	if len(optional) == 0 {
 		return map[string]string{}, nil
 	}
-	result, _, err := runEscalated(ctx, runner, escalation, commandPathOptionalResolutionScript(dedupeCommands(optional)))
+	command := commandPathOptionalResolutionScript(dedupeCommands(optional))
+	result, _, err := runEscalated(ctx, runner, escalation, command)
 	if err != nil {
-		return nil, fmt.Errorf("resolve optional command paths: %w", err)
+		return nil, ClassifyBootstrapFailure("Resolving optional bootstrap tools", command, result, fmt.Errorf("resolve optional command paths: %w", err))
 	}
 	paths, err := parseOptionalResolvedCommandPaths(result.Stdout)
 	if err != nil {
@@ -411,17 +477,17 @@ func resolveRequiredCommandPathsWithEscalation(ctx context.Context, runner remot
 		if missing == "" && parseErr != nil {
 			missing = firstMissingRequired(required, paths)
 		}
-		message := strings.TrimSpace(result.Stderr + "\n" + result.Stdout)
 		if missing != "" {
-			message = fmt.Sprintf("command %s could not be resolved to an executable absolute path", missing)
-			reportBootstrapEvent(reporter, BootstrapEvent{Step: commandPathStep(missing), Status: BootstrapStepFailed, Message: message})
-			return nil, fmt.Errorf("resolve command path %s: %s", missing, message)
+			message := fmt.Sprintf("command %s could not be resolved to an executable absolute path", missing)
+			classified := newBootstrapError(commandPathStep(missing), BootstrapErrorCommandMissing, message, "Install "+missing+" on the target host, then retry bootstrap.", runErr, result.Stderr+"\n"+result.Stdout)
+			code, guidance := bootstrapErrorDetails(classified)
+			reportBootstrapEvent(reporter, BootstrapEvent{Step: commandPathStep(missing), Status: BootstrapStepFailed, Message: bootstrapErrorMessage(classified), Code: string(code), Guidance: guidance})
+			return nil, classified
 		}
-		if message == "" {
-			message = runErr.Error()
-		}
-		reportBootstrapEvent(reporter, BootstrapEvent{Step: "Resolving command paths", Status: BootstrapStepFailed, Message: message})
-		return nil, fmt.Errorf("resolve command paths: %w", runErr)
+		classified := ClassifyBootstrapFailure("Resolving command paths", commandPathResolutionScript(required), result, runErr)
+		code, guidance := bootstrapErrorDetails(classified)
+		reportBootstrapEvent(reporter, BootstrapEvent{Step: "Resolving command paths", Status: BootstrapStepFailed, Message: bootstrapErrorMessage(classified), Code: string(code), Guidance: guidance})
+		return nil, classified
 	}
 	if parseErr != nil {
 		missing := firstMissingRequired(required, paths)
@@ -430,7 +496,7 @@ func resolveRequiredCommandPathsWithEscalation(ctx context.Context, runner remot
 		} else {
 			reportBootstrapEvent(reporter, BootstrapEvent{Step: "Resolving command paths", Status: BootstrapStepFailed, Message: parseErr.Error()})
 		}
-		return nil, parseErr
+		return nil, ClassifyBootstrapFailure("Resolving command paths", commandPathResolutionScript(required), result, parseErr)
 	}
 	for _, name := range required {
 		reportBootstrapEvent(reporter, BootstrapEvent{Step: commandPathStep(name), Status: BootstrapStepSuccess, Message: paths[name]})
@@ -602,12 +668,10 @@ func runStep(ctx context.Context, runner remotessh.Runner, reporter BootstrapRep
 	reportBootstrapEvent(reporter, BootstrapEvent{Step: step, Status: BootstrapStepRunning, Message: message})
 	result, err := runner.Run(ctx, command, input)
 	if err != nil {
-		failure := strings.TrimSpace(result.Stderr + "\n" + result.Stdout)
-		if failure == "" {
-			failure = err.Error()
-		}
-		reportBootstrapEvent(reporter, BootstrapEvent{Step: step, Status: BootstrapStepFailed, Message: failure})
-		return fmt.Errorf("%s: %w", step, err)
+		classified := ClassifyBootstrapFailure(step, command, result, err)
+		code, guidance := bootstrapErrorDetails(classified)
+		reportBootstrapEvent(reporter, BootstrapEvent{Step: step, Status: BootstrapStepFailed, Message: bootstrapErrorMessage(classified), Code: string(code), Guidance: guidance})
+		return classified
 	}
 	reportBootstrapEvent(reporter, BootstrapEvent{Step: step, Status: BootstrapStepSuccess, Message: strings.TrimSpace(result.Stdout)})
 	return nil
@@ -617,15 +681,10 @@ func runEscalatedStep(ctx context.Context, runner remotessh.Runner, reporter Boo
 	reportBootstrapEvent(reporter, BootstrapEvent{Step: step, Status: BootstrapStepRunning, Message: message})
 	result, escalated, err := runEscalated(ctx, runner, escalationInput{Facts: facts, Password: password}, command)
 	if err != nil {
-		failure := strings.TrimSpace(result.Stderr + "\n" + result.Stdout)
-		if failure == "" {
-			failure = err.Error()
-		}
-		if escalated.Mode == escalationSuRoot && suAuthenticationFailed(result, err) {
-			failure = "su did not accept the root password (prompt not answered or password rejected)"
-		}
-		reportBootstrapEvent(reporter, BootstrapEvent{Step: step, Status: BootstrapStepFailed, Message: failure})
-		return fmt.Errorf("%s: %w", step, err)
+		classified := ClassifyBootstrapFailure(step, escalated.Command, result, err)
+		code, guidance := bootstrapErrorDetails(classified)
+		reportBootstrapEvent(reporter, BootstrapEvent{Step: step, Status: BootstrapStepFailed, Message: bootstrapErrorMessage(classified), Code: string(code), Guidance: guidance})
+		return classified
 	}
 	reportBootstrapEvent(reporter, BootstrapEvent{Step: step, Status: BootstrapStepSuccess, Message: strings.TrimSpace(result.Stdout)})
 	return nil
