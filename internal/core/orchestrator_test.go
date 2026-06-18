@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -274,6 +275,61 @@ func TestOrchestratorOverlapPolicies(t *testing.T) {
 	}
 }
 
+func TestScheduleSuppressRebootOverridesHostPolicy(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		suppressReboot  bool
+		hostAutoReboot  bool
+		scheduleBacked  bool
+		wantReboot      bool
+		wantRebootProbe bool
+	}{
+		{name: "schedule suppress on host would reboot", suppressReboot: true, hostAutoReboot: true, scheduleBacked: true, wantReboot: false, wantRebootProbe: false},
+		{name: "schedule suppress off host policy honored", suppressReboot: false, hostAutoReboot: true, scheduleBacked: true, wantReboot: true, wantRebootProbe: true},
+		{name: "schedule suppress on host never reboot", suppressReboot: true, hostAutoReboot: false, scheduleBacked: true, wantReboot: false, wantRebootProbe: false},
+		{name: "manual ad hoc unaffected", suppressReboot: true, hostAutoReboot: true, scheduleBacked: false, wantReboot: true, wantRebootProbe: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			scheduleID := int64(7)
+			run := Run{ID: 1, Trigger: RunTriggerManual, Status: RunStatusRunning, StartedAt: time.Now().UTC()}
+			if test.scheduleBacked {
+				run.ScheduleID = &scheduleID
+			}
+			hostRun := HostRun{ID: 11, RunID: run.ID, HostID: 1, Status: HostRunStatusPending, LogPath: filepath.Join(t.TempDir(), "host.log")}
+			runner := &fakeSSHRunner{responses: map[string]fakeSSHResponse{
+				"resolve_patchpilot_command":                {result: remotessh.CommandResult{Stdout: aptResolvedPathsOutput()}},
+				"/usr/bin/test -f /var/run/reboot-required": {result: remotessh.CommandResult{ExitCode: 0}},
+			}}
+			runs := &fakeRunStore{}
+			orchestrator := &Orchestrator{
+				Hosts:     &fakeHostStore{hosts: map[int64]Host{1: {ID: 1, Name: "vm", Hostname: "vm", SSHUser: "patchpilot", Type: HostTypeStandard, PackageManager: "apt", Enabled: true, AutoReboot: test.hostAutoReboot}}},
+				Runs:      runs,
+				Schedules: &fakeScheduleStore{schedule: Schedule{ID: scheduleID, Name: "weekly", HostIDs: []int64{1}, Enabled: true, SuppressReboot: test.suppressReboot}},
+				Keys:      testKeyStore(t),
+			}
+			orchestrator.ConnectKey = func(context.Context, string, int, string, golangssh.Signer) (standardHostRunner, error) {
+				return runner, nil
+			}
+
+			success, failure, skipped, cancelled := orchestrator.executeRunTasks(context.Background(), RunDetail{Run: run, HostRuns: []HostRun{hostRun}})
+			if success != 1 || failure != 0 || skipped != 0 || cancelled {
+				t.Fatalf("counts success=%d failure=%d skipped=%d cancelled=%v", success, failure, skipped, cancelled)
+			}
+			if runs.lastRebootRequired != test.wantReboot {
+				t.Fatalf("rebootRequired = %v, want %v", runs.lastRebootRequired, test.wantReboot)
+			}
+			if got := runner.anyCommandContaining("/usr/bin/test -f /var/run/reboot-required"); got != test.wantRebootProbe {
+				t.Fatalf("reboot probe executed = %v, want %v; commands=%#v", got, test.wantRebootProbe, runner.commands)
+			}
+		})
+	}
+}
+
 type fakeHostStore struct {
 	hosts map[int64]Host
 }
@@ -296,8 +352,9 @@ func (s *fakeHostStore) SetEnabled(context.Context, int64, bool) (Host, error) {
 func (s *fakeHostStore) Delete(context.Context, int64) error                   { return nil }
 
 type fakeRunStore struct {
-	active *Run
-	nextID int64
+	active             *Run
+	nextID             int64
+	lastRebootRequired bool
 }
 
 func (s *fakeRunStore) CreateRunWithHosts(_ context.Context, input RunCreate, hostIDs []int64) (RunDetail, error) {
@@ -317,7 +374,9 @@ func (s *fakeRunStore) PromoteQueued(context.Context, int64) (RunDetail, error) 
 	return RunDetail{}, nil
 }
 func (s *fakeRunStore) StartHostRun(context.Context, int64) error { return nil }
-func (s *fakeRunStore) FinishHostRun(context.Context, int64, HostRunStatus, int, int, bool, string) error {
+
+func (s *fakeRunStore) FinishHostRun(_ context.Context, _ int64, _ HostRunStatus, _ int, _ int, rebootRequired bool, _ string) error {
+	s.lastRebootRequired = rebootRequired
 	return nil
 }
 func (s *fakeRunStore) FinishRun(context.Context, int64, RunStatus, string) error { return nil }
@@ -384,6 +443,15 @@ func (s fakeSettingsStore) ConcurrencyEnabled(context.Context) (bool, error) {
 	return s.concurrency, nil
 }
 
+func testKeyStore(t *testing.T) *remotessh.KeyStore {
+	t.Helper()
+	store := remotessh.NewKeyStore(t.TempDir())
+	if _, err := store.Ensure(context.Background()); err != nil {
+		t.Fatalf("Ensure() error: %v", err)
+	}
+	return store
+}
+
 type fakeSSHResponse struct {
 	result remotessh.CommandResult
 	err    error
@@ -396,6 +464,19 @@ type fakeSSHRunner struct {
 
 func (r *fakeSSHRunner) Run(_ context.Context, command string, _ []byte) (remotessh.CommandResult, error) {
 	r.commands = append(r.commands, command)
+	for needle, response := range r.responses {
+		if strings.Contains(command, needle) {
+			return response.result, response.err
+		}
+	}
+	return remotessh.CommandResult{}, nil
+}
+
+func (r *fakeSSHRunner) RunStream(_ context.Context, command string, _ []byte, onChunk func(remotessh.StreamChunk)) (remotessh.CommandResult, error) {
+	r.commands = append(r.commands, command)
+	if onChunk != nil {
+		onChunk(remotessh.StreamChunk{Stream: "stdout", Data: []byte("updated\n")})
+	}
 	for needle, response := range r.responses {
 		if strings.Contains(command, needle) {
 			return response.result, response.err

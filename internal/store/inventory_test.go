@@ -29,7 +29,7 @@ func TestInventoryRoundTripExcludesAPITokens(t *testing.T) {
 		t.Fatalf("SetBool() error: %v", err)
 	}
 	schedules := NewScheduleRepository(source)
-	if _, err := schedules.Create(ctx, core.ScheduleInput{Name: "weekly", Frequency: core.FrequencyWeekly, Hour: 3, DayOfWeek: 0, Enabled: true, MaxConcurrent: 4, HostIDs: []int64{standard.ID}}, nil); err != nil {
+	if _, err := schedules.Create(ctx, core.ScheduleInput{Name: "weekly", Frequency: core.FrequencyWeekly, Hour: 3, DayOfWeek: 0, Enabled: true, MaxConcurrent: 4, SuppressReboot: true, HostIDs: []int64{standard.ID}}, nil); err != nil {
 		t.Fatalf("Create schedule error: %v", err)
 	}
 	backup, err := NewInventoryRepository(source).Export(ctx)
@@ -69,7 +69,7 @@ func TestInventoryRoundTripExcludesAPITokens(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List schedules error: %v", err)
 	}
-	if len(importedSchedules) != 1 || importedSchedules[0].MaxConcurrent != 4 || importedSchedules[0].HostCount != 1 {
+	if len(importedSchedules) != 1 || importedSchedules[0].MaxConcurrent != 4 || !importedSchedules[0].SuppressReboot || importedSchedules[0].HostCount != 1 {
 		t.Fatalf("imported schedules = %#v", importedSchedules)
 	}
 	if enabled, err := NewSettingsRepository(target).ConcurrencyEnabled(ctx); err != nil || !enabled {

@@ -30,15 +30,16 @@ type InventoryHost struct {
 
 // InventorySchedule is a schedule backup record.
 type InventorySchedule struct {
-	ID            int64     `yaml:"id" json:"id"`
-	Name          string    `yaml:"name" json:"name"`
-	Frequency     Frequency `yaml:"frequency" json:"frequency"`
-	Minute        int       `yaml:"minute" json:"minute"`
-	Hour          int       `yaml:"hour" json:"hour"`
-	DayOfWeek     int       `yaml:"day_of_week" json:"day_of_week"`
-	DayOfMonth    int       `yaml:"day_of_month" json:"day_of_month"`
-	Enabled       bool      `yaml:"enabled" json:"enabled"`
-	MaxConcurrent int       `yaml:"max_concurrent" json:"max_concurrent"`
+	ID             int64     `yaml:"id" json:"id"`
+	Name           string    `yaml:"name" json:"name"`
+	Frequency      Frequency `yaml:"frequency" json:"frequency"`
+	Minute         int       `yaml:"minute" json:"minute"`
+	Hour           int       `yaml:"hour" json:"hour"`
+	DayOfWeek      int       `yaml:"day_of_week" json:"day_of_week"`
+	DayOfMonth     int       `yaml:"day_of_month" json:"day_of_month"`
+	Enabled        bool      `yaml:"enabled" json:"enabled"`
+	MaxConcurrent  int       `yaml:"max_concurrent" json:"max_concurrent"`
+	SuppressReboot bool      `yaml:"suppress_reboot" json:"suppress_reboot"`
 }
 
 // InventoryScheduleHost links schedules to hosts.

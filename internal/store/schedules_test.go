@@ -26,19 +26,29 @@ func TestScheduleRepositoryCRUD(t *testing.T) {
 	}
 	repo := NewScheduleRepository(db)
 	next := time.Now().UTC().Add(time.Hour)
-	schedule, err := repo.Create(context.Background(), core.ScheduleInput{Name: "weekly", Frequency: core.FrequencyWeekly, Minute: 0, Hour: 3, DayOfWeek: 0, DayOfMonth: 1, Enabled: true, HostIDs: []int64{host.ID}}, &next)
+	schedule, err := repo.Create(context.Background(), core.ScheduleInput{Name: "weekly", Frequency: core.FrequencyWeekly, Minute: 0, Hour: 3, DayOfWeek: 0, DayOfMonth: 1, Enabled: true, SuppressReboot: true, HostIDs: []int64{host.ID}}, &next)
 	if err != nil {
 		t.Fatalf("Create() error: %v", err)
 	}
 	if schedule.ID == 0 || schedule.HostCount != 1 || len(schedule.HostIDs) != 1 {
 		t.Fatalf("created schedule = %#v", schedule)
 	}
+	if !schedule.SuppressReboot {
+		t.Fatalf("created schedule suppress_reboot = false, want true")
+	}
+	listed, err := repo.List(context.Background())
+	if err != nil {
+		t.Fatalf("List() error: %v", err)
+	}
+	if len(listed) != 1 || !listed[0].SuppressReboot {
+		t.Fatalf("listed schedules = %#v, want suppress_reboot round-trip", listed)
+	}
 
-	schedule, err = repo.Update(context.Background(), schedule.ID, core.ScheduleInput{Name: "daily", Frequency: core.FrequencyDaily, Minute: 30, Hour: 4, Enabled: false}, &next)
+	schedule, err = repo.Update(context.Background(), schedule.ID, core.ScheduleInput{Name: "daily", Frequency: core.FrequencyDaily, Minute: 30, Hour: 4, Enabled: false, SuppressReboot: false}, &next)
 	if err != nil {
 		t.Fatalf("Update() error: %v", err)
 	}
-	if schedule.Name != "daily" || schedule.Enabled || schedule.HostCount != 0 {
+	if schedule.Name != "daily" || schedule.Enabled || schedule.SuppressReboot || schedule.HostCount != 0 {
 		t.Fatalf("updated schedule = %#v", schedule)
 	}
 	if err := repo.MarkSkipped(context.Background(), schedule.ID, time.Now().UTC(), "overlap", &next); err != nil {

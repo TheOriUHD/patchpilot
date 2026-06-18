@@ -1,0 +1,1 @@
+ALTER TABLE schedules ADD COLUMN suppress_reboot INTEGER NOT NULL DEFAULT 0 CHECK (suppress_reboot IN (0, 1));

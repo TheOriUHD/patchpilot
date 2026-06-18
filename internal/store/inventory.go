@@ -45,7 +45,7 @@ func (r *InventoryRepository) Export(ctx context.Context) (core.InventoryBackup,
 		backup.Hosts = append(backup.Hosts, core.InventoryHost{ID: host.ID, Name: host.Name, Hostname: host.Hostname, SSHPort: host.SSHPort, SSHUser: host.SSHUser, Type: host.Type, PackageManager: host.PackageManager, OSPretty: host.OSPretty, Arch: host.Arch, IsProxmoxHost: host.IsProxmoxHost, IsSelf: host.IsSelf, Enabled: host.Enabled, AutoReboot: host.AutoReboot, AutoRebootDelay: host.AutoRebootDelay, Notes: host.Notes})
 	}
 	for _, schedule := range schedules {
-		backup.Schedules = append(backup.Schedules, core.InventorySchedule{ID: schedule.ID, Name: schedule.Name, Frequency: schedule.Frequency, Minute: schedule.Minute, Hour: schedule.Hour, DayOfWeek: schedule.DayOfWeek, DayOfMonth: schedule.DayOfMonth, Enabled: schedule.Enabled, MaxConcurrent: schedule.MaxConcurrent})
+		backup.Schedules = append(backup.Schedules, core.InventorySchedule{ID: schedule.ID, Name: schedule.Name, Frequency: schedule.Frequency, Minute: schedule.Minute, Hour: schedule.Hour, DayOfWeek: schedule.DayOfWeek, DayOfMonth: schedule.DayOfMonth, Enabled: schedule.Enabled, MaxConcurrent: schedule.MaxConcurrent, SuppressReboot: schedule.SuppressReboot})
 	}
 	return backup, nil
 }
@@ -135,7 +135,7 @@ func (r *InventoryRepository) Import(ctx context.Context, backup core.InventoryB
 	}
 	for _, schedule := range backup.Schedules {
 		hostIDs := linkedHostIDs(backup.ScheduleHosts, schedule.ID, idMap)
-		input := core.ScheduleInput{Name: schedule.Name, Frequency: schedule.Frequency, Minute: schedule.Minute, Hour: schedule.Hour, DayOfWeek: schedule.DayOfWeek, DayOfMonth: schedule.DayOfMonth, Enabled: schedule.Enabled, MaxConcurrent: schedule.MaxConcurrent, HostIDs: hostIDs}
+		input := core.ScheduleInput{Name: schedule.Name, Frequency: schedule.Frequency, Minute: schedule.Minute, Hour: schedule.Hour, DayOfWeek: schedule.DayOfWeek, DayOfMonth: schedule.DayOfMonth, Enabled: schedule.Enabled, MaxConcurrent: schedule.MaxConcurrent, SuppressReboot: schedule.SuppressReboot, HostIDs: hostIDs}
 		if existing, ok := existingScheduleByName[strings.ToLower(schedule.Name)]; ok {
 			resolution := options.Conflicts[schedule.Name]
 			switch resolution.Action {

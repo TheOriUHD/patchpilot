@@ -172,6 +172,9 @@ func (m model) handleScheduleEditorKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.adjustScheduleField(1)
 		return m, nil
 	case " ":
+		if fields[m.scheduleEditor.field] == "Reboot" {
+			m.scheduleEditor.input.SuppressReboot = !m.scheduleEditor.input.SuppressReboot
+		}
 		if fields[m.scheduleEditor.field] == "Hosts" && len(m.hosts) > 0 {
 			host := m.hosts[m.scheduleEditor.hostCursor]
 			m.scheduleEditor.input.HostIDs = toggleID(m.scheduleEditor.input.HostIDs, host.ID)
@@ -226,6 +229,8 @@ func (m *model) adjustScheduleField(delta int) {
 		}
 	case "Enabled":
 		m.scheduleEditor.input.Enabled = !m.scheduleEditor.input.Enabled
+	case "Reboot":
+		m.scheduleEditor.input.SuppressReboot = !m.scheduleEditor.input.SuppressReboot
 	case "Max":
 		m.scheduleEditor.input.MaxConcurrent = clamp(max(1, m.scheduleEditor.input.MaxConcurrent)+delta, 1, 10)
 	case "Hosts":
@@ -326,6 +331,7 @@ func (m model) renderScheduleEditor(bodyHeight int) string {
 		"Day":       scheduleDayValue(input),
 		"Max":       strconv.Itoa(max(1, input.MaxConcurrent)),
 		"Enabled":   strconv.FormatBool(input.Enabled),
+		"Reboot":    suppressRebootLabel(input.SuppressReboot),
 		"Hosts":     fmt.Sprintf("%d selected", len(input.HostIDs)),
 		"Save":      "press Enter",
 	}
@@ -345,6 +351,8 @@ func (m model) renderScheduleEditor(bodyHeight int) string {
 		}
 		builder.WriteByte('\n')
 	}
+	builder.WriteString(m.styles.MutedText.Render("When enabled, host reboot policy is ignored for runs from this schedule; reboots are suppressed, never forced."))
+	builder.WriteByte('\n')
 	builder.WriteString("\n")
 	builder.WriteString(m.styles.CardTitle.Render("Hosts"))
 	builder.WriteByte('\n')
@@ -381,7 +389,7 @@ func (m model) renderScheduleEditor(bodyHeight int) string {
 
 func (m model) scheduleKeybinds() []string {
 	if m.scheduleScreen == scheduleScreenEditor {
-		return []string{"Tab field", "←/→ change", "Space host", "s save", "Esc cancel"}
+		return []string{"Tab field", "←/→ change", "Space toggle", "s save", "Esc cancel"}
 	}
 	if m.schedulePending.Kind != "" {
 		return []string{"y confirm", "n cancel"}
@@ -449,11 +457,18 @@ func runScheduleCmd(ctx context.Context, client *ipc.Client, id int64) tea.Cmd {
 }
 
 func (m model) scheduleEditorFields() []string {
-	fields := []string{"Name", "Frequency", "Hour", "Minute", "Day", "Enabled"}
+	fields := []string{"Name", "Frequency", "Hour", "Minute", "Day", "Enabled", "Reboot"}
 	if m.settingsSnapshot != nil && m.settingsSnapshot.ConcurrencyEnabled {
 		fields = append(fields, "Max")
 	}
 	return append(fields, "Hosts", "Save")
+}
+
+func suppressRebootLabel(value bool) string {
+	if value {
+		return "[x] Suppress automatic reboot for this schedule"
+	}
+	return "[ ] Suppress automatic reboot for this schedule"
 }
 
 func scheduleDayValue(input core.ScheduleInput) string {

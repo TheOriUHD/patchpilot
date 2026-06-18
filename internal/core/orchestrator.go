@@ -18,6 +18,7 @@ import (
 	remotessh "github.com/TheOriUHD/patchpilot/internal/ssh"
 	"github.com/TheOriUHD/patchpilot/internal/stream"
 	"github.com/TheOriUHD/patchpilot/internal/truenas"
+	golangssh "golang.org/x/crypto/ssh"
 )
 
 // ErrScheduledOverlap is returned when a scheduled fire is skipped because another run is active.
@@ -74,6 +75,13 @@ type SelfUpdateScheduler interface {
 	Schedule(ctx context.Context, runID int64) (string, string, error)
 }
 
+type standardHostRunner interface {
+	remotessh.Runner
+	RunStream(ctx context.Context, command string, stdin []byte, onChunk func(remotessh.StreamChunk)) (remotessh.CommandResult, error)
+}
+
+type standardHostConnector func(ctx context.Context, host string, port int, user string, signer golangssh.Signer) (standardHostRunner, error)
+
 // Orchestrator coordinates schedule/manual/CLI update runs.
 type Orchestrator struct {
 	Hosts       HostRepository
@@ -86,6 +94,7 @@ type Orchestrator struct {
 	SelfUpdater SelfUpdateScheduler
 	Streams     *stream.Hub
 	Logger      *slog.Logger
+	ConnectKey  standardHostConnector
 
 	mu           sync.Mutex
 	activeRunID  int64
@@ -363,8 +372,9 @@ func (o *Orchestrator) finishActive(runID int64) {
 }
 
 type runTask struct {
-	Host    Host
-	HostRun HostRun
+	Host           Host
+	HostRun        HostRun
+	SuppressReboot bool
 }
 
 func (o *Orchestrator) executeRunTasks(ctx context.Context, detail RunDetail) (int, int, int, bool) {
@@ -372,6 +382,18 @@ func (o *Orchestrator) executeRunTasks(ctx context.Context, detail RunDetail) (i
 	successCount := 0
 	failureCount := 0
 	skippedCount := 0
+	suppressReboot := false
+	if detail.Run.ScheduleID != nil {
+		schedule, err := o.Schedules.Get(ctx, *detail.Run.ScheduleID)
+		if err != nil {
+			failureCount += len(detail.HostRuns)
+			for _, hostRun := range detail.HostRuns {
+				_ = o.Runs.FinishHostRun(context.Background(), hostRun.ID, HostRunStatusFailed, -1, 0, false, err.Error())
+			}
+			return 0, failureCount, 0, false
+		}
+		suppressReboot = schedule.SuppressReboot
+	}
 	for _, hostRun := range detail.HostRuns {
 		host, err := o.Hosts.Get(ctx, hostRun.HostID)
 		if err != nil {
@@ -379,7 +401,7 @@ func (o *Orchestrator) executeRunTasks(ctx context.Context, detail RunDetail) (i
 			_ = o.Runs.FinishHostRun(context.Background(), hostRun.ID, HostRunStatusFailed, -1, 0, false, err.Error())
 			continue
 		}
-		tasks = append(tasks, runTask{Host: host, HostRun: hostRun})
+		tasks = append(tasks, runTask{Host: host, HostRun: hostRun, SuppressReboot: suppressReboot})
 	}
 	maxConcurrent := o.maxConcurrentForRun(ctx, detail)
 	for group := 0; group < 5; group++ {
@@ -461,7 +483,11 @@ func (o *Orchestrator) executeRunTask(ctx context.Context, runID int64, task run
 		o.Logger.Error("start host run", "error", err, "host_run_id", hostRun.ID)
 	}
 	o.publish(runID, RunEvent{RunID: runID, HostRunID: hostRun.ID, HostID: host.ID, HostName: host.Name, HostStatus: HostRunStatusRunning, Message: "host update started", OccurredAt: time.Now().UTC()})
-	outcome := o.executeHostRun(ctx, host, hostRun)
+	outcome := o.executeHostRun(ctx, host, hostRun, task.SuppressReboot)
+	if task.SuppressReboot && outcome.RebootRequired {
+		appendCleanLog(hostRun.LogPath, "reboot suppressed by schedule policy\n")
+		outcome.RebootRequired = false
+	}
 	if errors.Is(ctx.Err(), context.Canceled) {
 		return outcome
 	}
@@ -514,7 +540,7 @@ func hostExecutionGroup(host Host) int {
 	}
 }
 
-func (o *Orchestrator) executeHostRun(ctx context.Context, host Host, hostRun HostRun) hostOutcome {
+func (o *Orchestrator) executeHostRun(ctx context.Context, host Host, hostRun HostRun, suppressReboot bool) hostOutcome {
 	if host.Type == HostTypeTrueNAS || pkgmgr.PackageManager(host.PackageManager) == pkgmgr.ManagerTrueNASAPI {
 		return o.executeTrueNASRun(ctx, host, hostRun)
 	}
@@ -540,7 +566,13 @@ func (o *Orchestrator) executeHostRun(ctx context.Context, host Host, hostRun Ho
 		appendCleanLog(hostRun.LogPath, err.Error()+"\n")
 		return hostOutcome{Status: HostRunStatusFailed, ExitCode: -1, Summary: err.Error()}
 	}
-	runner, err := remotessh.ConnectKey(ctx, host.Hostname, normalizePort(host.SSHPort), host.SSHUser, keypair.Signer)
+	connector := o.ConnectKey
+	if connector == nil {
+		connector = func(ctx context.Context, host string, port int, user string, signer golangssh.Signer) (standardHostRunner, error) {
+			return remotessh.ConnectKey(ctx, host, port, user, signer)
+		}
+	}
+	runner, err := connector(ctx, host.Hostname, normalizePort(host.SSHPort), host.SSHUser, keypair.Signer)
 	if err != nil {
 		appendCleanLog(hostRun.LogPath, err.Error()+"\n")
 		return hostOutcome{Status: HostRunStatusFailed, ExitCode: -1, Summary: err.Error()}
@@ -572,7 +604,12 @@ func (o *Orchestrator) executeHostRun(ctx context.Context, host Host, hostRun Ho
 	if err != nil {
 		return hostOutcome{Status: HostRunStatusFailed, ExitCode: result.ExitCode, Summary: err.Error()}
 	}
-	rebootRequired := o.checkRebootRequired(ctx, runner, manager, paths, hostRun.LogPath)
+	rebootRequired := false
+	if suppressReboot {
+		appendCleanLog(hostRun.LogPath, "reboot detection skipped: suppressed by schedule policy\n")
+	} else {
+		rebootRequired = o.checkRebootRequired(ctx, runner, manager, paths, hostRun.LogPath)
+	}
 	return hostOutcome{Status: HostRunStatusSuccess, ExitCode: result.ExitCode, RebootRequired: rebootRequired, Summary: "update completed"}
 }
 
